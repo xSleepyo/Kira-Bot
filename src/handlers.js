@@ -142,7 +142,13 @@ async function handleMessageCreate(client, message) {
                 },
                 {
                     name: "Moderation & Utility (Admin Required)",
-                    value: "`.purge [number]` - Delete messages.\n`.gifperms @user [permanent/revoke]` - Grant temporary, permanent, or remove GIF/link permission.\n`.restart` - Restarts the bot process.",
+                    // FIX APPLIED HERE: Changed to clearly list .gifperms sub-commands
+                    value: 
+                        "`.purge [number]` - Delete messages.\n" +
+                        "`.gifperms @user` - Grant **one-time** GIF/link permission.\n" +
+                        "`.gifperms @user perm(anent)` - Grant **permanent** GIF/link permission.\n" +
+                        "`.gifperms @user revoke` - **Remove** permanent access.\n" +
+                        "`.restart` - Restarts the bot process.",
                     inline: false,
                 },
                 {
