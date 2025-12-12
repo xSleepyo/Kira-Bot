@@ -12,7 +12,8 @@ const {
 } = require('./utils');
 
 // Import database functions and state
-const { saveState, getState, globalState } = require('./database');
+// FIX: Added getDbClient to the imports to resolve the ReferenceError
+const { saveState, getState, globalState, getDbClient } = require('./database');
 
 // --- Helper to register all handlers on bot startup ---
 function registerHandlers(client) {
@@ -281,6 +282,7 @@ async function handleMessageCreate(client, message) {
             await saveState(state.nextNumberChannelId, state.nextNumber, message.channel.id);
             
             // 2. Clean up database connection
+            // FIX: getDbClient is now imported and available
             await getDbClient().end().catch(e => console.error("Failed to close DB connection:", e));
 
             // 3. Clean up self-ping interval
