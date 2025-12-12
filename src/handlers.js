@@ -269,7 +269,7 @@ async function handleMessageCreate(client, message) {
     }
     // --- End of .gifperms Command ---
 
-    // --- Command: .restart (RESTORED COMPLETION LOGIC) ---
+    // --- Command: .restart (FIXED TO PREVENT DUPLICATES) ---
     else if (commandName === "restart") {
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to restart the bot.");
@@ -293,8 +293,12 @@ async function handleMessageCreate(client, message) {
             // 4. Destroy the Discord client connection
             client.destroy();
             
-            // 5. Exit the process, triggering the host to restart the script
-            process.exit(0);
+            // 5. Force a delayed exit (500ms) to ensure the Discord client fully disconnects,
+            // preventing the host (Render) from immediately spawning a duplicate process.
+            setTimeout(() => {
+                process.exit(0);
+            }, 500); 
+
         } catch (error) {
             console.error("Error during restart cleanup:", error);
             message.channel.send("❌ Failed to initiate restart during cleanup. Check logs.");
