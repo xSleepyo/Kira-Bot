@@ -28,38 +28,46 @@ async function handleMessageCreate(client, message) {
 
     // --- GIF PERMS CHECK (AUTOMATIC ROLE REMOVAL) ---
     const gifRole = message.member ? message.guild.roles.cache.find(r => r.name === GIF_PERMS_ROLE_NAME) : null;
+    
     if (gifRole && message.member && message.member.roles.cache.has(gifRole.id)) {
-        // Check if the role is the permanent role. If a separate permanent role ID existed, 
-        // we would check for both. Since we are using ONE role, we rely on the command 
-        // logic below to only auto-remove if it was granted *without* the permanent flag.
         
         const containsContent = 
             message.attachments.size > 0 || 
             message.embeds.length > 0 ||
             /\b(https?:\/\/\S+)\b/i.test(message.content); 
         
-        // This is where you would normally check if the user was granted the role permanently.
-        // For now, we will assume that the auto-removal logic should ONLY happen
-        // if the role was granted via the ONE-TIME command. Since we don't track 
-        // who got the role permanently in a database, the default auto-removal 
-        // is based purely on message content. If you want to disable auto-removal 
-        // for 'permanent' users, you would need a database table to store those IDs.
-
         if (containsContent) {
-            setTimeout(async () => {
-                const currentMember = await message.guild.members.fetch(message.author.id).catch(() => null);
-                if (currentMember && currentMember.roles.cache.has(gifRole.id)) { 
-                    // WARNING: If you want to allow permanent users to post without losing the role, 
-                    // you MUST implement a database check here to see if the user has a "permanent" status.
-                    // Since that DB functionality is not here, this logic remains unchanged:
-                    
-                    await currentMember.roles.remove(gifRole);
-                    const removalMsg = await message.channel.send(
-                        `🗑️ ${message.author}, your **@${GIF_PERMS_ROLE_NAME}** role has been automatically removed after posting a link/GIF.`,
-                    );
-                    setTimeout(() => removalMsg.delete().catch(console.error), 7000);
+            try {
+                // 1. Check if user has PERMANENT access saved in the database
+                const dbClient = getDbClient();
+                const permCheck = await dbClient.query(
+                    `SELECT 1 FROM permanent_gif_users WHERE guild_id = $1 AND user_id = $2`,
+                    [message.guild.id, message.author.id]
+                );
+                
+                // If a row is found (permCheck.rowCount > 0), the user has PERMANENT access. Skip removal.
+                if (permCheck.rowCount > 0) {
+                    return; // Skip auto-removal for permanent users
                 }
-            }, 1000);
+
+                // 2. If no permanent record found, proceed with auto-removal for one-time users
+                setTimeout(async () => {
+                    const currentMember = await message.guild.members.fetch(message.author.id).catch(() => null);
+                    if (currentMember && currentMember.roles.cache.has(gifRole.id)) { 
+                        
+                        await currentMember.roles.remove(gifRole);
+                        const removalMsg = await message.channel.send(
+                            `🗑️ ${message.author}, your **@${GIF_PERMS_ROLE_NAME}** role has been automatically removed after posting a link/GIF. (One-time permission used)`,
+                        );
+                        setTimeout(() => removalMsg.delete().catch(console.error), 7000);
+                    }
+                }, 1000);
+
+            } catch (error) {
+                console.error("Database error during GIF perm check:", error);
+                // Fail safe: If DB check fails, prevent removal to be safe.
+                return;
+            }
         }
     }
     // --- END GIF PERMS CHECK ---
@@ -256,7 +264,7 @@ async function handleMessageCreate(client, message) {
         }
     }
     
-    // --- Command: .gifperms (UPDATED LOGIC) ---
+    // --- Command: .gifperms (UPDATED LOGIC FOR PERMANENT STATUS) ---
     else if (commandName === "gifperms") {
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to manage GIF permissions.");
@@ -272,36 +280,55 @@ async function handleMessageCreate(client, message) {
             return message.channel.send(`❌ The role **@${GIF_PERMS_ROLE_NAME}** was not found in this server. Please create it first.`);
         }
         
-        // Check for optional second argument (perm, permanent, or revoke)
         const action = args[1] ? args[1].toLowerCase() : 'one-time';
+        const dbClient = getDbClient(); 
         
         try {
             if (action === 'revoke') {
                 if (targetMember.roles.cache.has(gifRole.id)) {
                     await targetMember.roles.remove(gifRole);
-                    message.channel.send(`✅ Revoked **@${GIF_PERMS_ROLE_NAME}** from ${targetMember}.`);
-                } else {
-                    message.channel.send(`⚠️ ${targetMember} does not have the **@${GIF_PERMS_ROLE_NAME}** role.`);
                 }
+                // 1. Remove from permanent DB table
+                const result = await dbClient.query(
+                    `DELETE FROM permanent_gif_users WHERE guild_id = $1 AND user_id = $2`,
+                    [message.guild.id, targetMember.id]
+                );
+                
+                if (result.rowCount > 0) {
+                    message.channel.send(`✅ Revoked **@${GIF_PERMS_ROLE_NAME}** and removed **permanent** status from ${targetMember}.`);
+                } else {
+                    message.channel.send(`⚠️ Revoked **@${GIF_PERMS_ROLE_NAME}** from ${targetMember}. User did not have permanent status.`);
+                }
+                
             } else if (action === 'permanent' || action === 'perm') {
                 if (!targetMember.roles.cache.has(gifRole.id)) {
                     await targetMember.roles.add(gifRole);
                 }
-                // NOTE: Since you are using a single role, the auto-removal logic will still trigger 
-                // unless you implement a database to track permanent users and check it in the 
-                // handleMessageCreate function at the top. For now, this just grants the role.
-                message.channel.send(`✅ Granted **PERMANENT** **@${GIF_PERMS_ROLE_NAME}** to ${targetMember}. (Auto-removal will be skipped if DB implementation is complete)`);
+                // 1. Add to permanent DB table (ON CONFLICT DO NOTHING handles duplicates)
+                await dbClient.query(
+                    `INSERT INTO permanent_gif_users (guild_id, user_id) VALUES ($1, $2) ON CONFLICT (guild_id, user_id) DO NOTHING`,
+                    [message.guild.id, targetMember.id]
+                );
+                
+                message.channel.send(`✅ Granted **PERMANENT** **@${GIF_PERMS_ROLE_NAME}** to ${targetMember}. Auto-removal is now disabled for them.`);
+                
             } else { // Default to one-time
                 if (targetMember.roles.cache.has(gifRole.id)) {
-                     return message.channel.send(`⚠️ ${targetMember} already has the **@${GIF_PERMS_ROLE_NAME}** role.`);
+                     return message.channel.send(`⚠️ ${targetMember} already has the **@${GIF_PERMS_ROLE_NAME}** role. Use \`.gifperms @user revoke\` first to reset status.`);
                 }
+                // 1. Ensure user is NOT marked as permanent
+                await dbClient.query(
+                    `DELETE FROM permanent_gif_users WHERE guild_id = $1 AND user_id = $2`,
+                    [message.guild.id, targetMember.id]
+                );
+                
                 await targetMember.roles.add(gifRole);
-                message.channel.send(`✅ Granted **ONE-TIME** **@${GIF_PERMS_ROLE_NAME}** to ${targetMember}. They can now post **one** link/GIF.`);
+                message.channel.send(`✅ Granted **ONE-TIME** **@${GIF_PERMS_ROLE_NAME}** to ${targetMember}. They can now post **one** link/GIF before the role is automatically removed.`);
             }
 
         } catch (error) {
-            console.error("Error managing GIF perms role:", error);
-            message.channel.send("❌ Failed to manage the role. Check the bot's role hierarchy and permissions.");
+            console.error("Database error managing GIF perms role:", error);
+            message.channel.send("❌ Failed to manage the role or update the database. Check the bot's role hierarchy and database connection.");
         }
     }
     // --- End of .gifperms Command ---
@@ -717,7 +744,7 @@ async function handleReactionRole(reaction, user, added, db) {
 
         if (result.rows.length === 0) return;
 
-        const roleId = result.rows[0].role.id;
+        const roleId = result.rows[0].role_id;
         const guild = reaction.message.guild;
         const member = await guild.members.fetch(user.id);
         const role = guild.roles.cache.get(roleId);

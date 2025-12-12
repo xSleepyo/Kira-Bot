@@ -51,6 +51,17 @@ async function setupDatabase() {
                 UNIQUE (message_id, emoji_name)
             );
         `);
+        
+        // --- NEW: Ensure permanent_gif_users table exists ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS permanent_gif_users (
+                guild_id VARCHAR(20) NOT NULL,
+                user_id VARCHAR(20) NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
+        `);
+        // ----------------------------------------------------
+
         console.log("✅ Database tables ensured.");
     } catch (error) {
         console.error("CRITICAL ERROR: Failed to connect or setup database!", error);
