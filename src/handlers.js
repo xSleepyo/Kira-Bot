@@ -306,7 +306,7 @@ async function handleMessageCreate(client, message) {
     }
     // --- End of .gifperms Command ---
 
-    // --- Command: .restart ---
+    // --- Command: .restart (UPDATED FOR PM2) ---
     else if (commandName === "restart") {
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to restart the bot.");
@@ -319,7 +319,10 @@ async function handleMessageCreate(client, message) {
             await saveState(state.nextNumberChannelId, state.nextNumber, message.channel.id);
             
             // 2. Clean up database connection
-            await getDbClient().end().catch(e => console.error("Failed to close DB connection:", e));
+            const dbClient = getDbClient();
+            if (dbClient && dbClient.end) {
+                 await dbClient.end().catch(e => console.error("Failed to close DB connection:", e));
+            }
 
             // 3. Clean up self-ping interval
             if (globalState.selfPingInterval) {
@@ -329,15 +332,13 @@ async function handleMessageCreate(client, message) {
             // 4. Destroy the Discord client connection
             client.destroy();
             
-            // 5. Force a delayed exit (500ms) to ensure the Discord client fully disconnects,
-            // preventing the host (Render) from immediately spawning a duplicate process.
-            setTimeout(() => {
-                process.exit(0);
-            }, 500); 
+            // 5. Exit the process immediately. PM2 catches exit code 0 and automatically restarts.
+            console.log("Process exiting cleanly. PM2 will handle the relaunch.");
+            process.exit(0); 
 
         } catch (error) {
-            console.error("Error during restart cleanup:", error);
-            message.channel.send("❌ Failed to initiate restart during cleanup. Check logs.");
+            console.error("Error during restart execution/cleanup:", error);
+            message.channel.send("❌ Failed to initiate restart. Check logs.");
         }
     }
     // --- End of .restart Command ---
@@ -716,7 +717,7 @@ async function handleReactionRole(reaction, user, added, db) {
 
         if (result.rows.length === 0) return;
 
-        const roleId = result.rows[0].role_id;
+        const roleId = result.rows[0].role.id;
         const guild = reaction.message.guild;
         const member = await guild.members.fetch(user.id);
         const role = guild.roles.cache.get(roleId);
