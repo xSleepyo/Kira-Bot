@@ -91,8 +91,9 @@ function formatTime(ms) {
  * Stops the current mystery box timer.
  */
 function stopMysteryBoxTimer() {
+    // FIX: Use standard Node.js clearTimeout
     if (globalState.mysteryBoxTimer) {
-        clearTimeout(globalState.mysteryBoxTimer);
+        clearTimeout(globalState.mysteryBoxTimer); 
         globalState.mysteryBoxTimer = null;
     }
 }
@@ -269,7 +270,7 @@ async function sendMysteryBoxDrop(client) {
 
 /**
  * Calculates time and starts the scheduled timer for the next mystery box drop.
- * @param {Discord.Client} client
+ * @param {Discord.Client} client - The Discord client is needed to pass to sendMysteryBoxDrop for channel fetching.
  * @param {boolean} updateNextDrop - If true, calculates and saves a new next_drop_timestamp.
  */
 function startMysteryBoxTimer(client, updateNextDrop = false) {
@@ -304,7 +305,8 @@ function startMysteryBoxTimer(client, updateNextDrop = false) {
 
     console.log(`[MYSTERY BOX] Next drop scheduled in ${formatTime(delayMs)}`);
     
-    globalState.mysteryBoxTimer = client.setTimeout(() => {
+    // FIX: Use standard Node.js setTimeout instead of client.setTimeout
+    globalState.mysteryBoxTimer = setTimeout(() => {
         sendMysteryBoxDrop(client);
     }, delayMs);
 }
