@@ -20,7 +20,7 @@ const globalState = {
     mysteryBoxNextDrop: null, // Timestamp (Date.now()) of the next drop (BIGINT from DB)
     mysteryBoxTimer: null,    // The actual NodeJS Timer object
     
-    selfPingInterval: null, // Stays here as it is tied to the running state
+    selfPingInterval: null, 
 };
 
 async function setupDatabase() {
@@ -49,11 +49,13 @@ async function setupDatabase() {
         // --- REACTION ROLES TABLE ---
         await db.query(`
             CREATE TABLE IF NOT EXISTS reaction_roles (
+                id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 message_id TEXT NOT NULL,
-                role_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
                 emoji_name TEXT NOT NULL,
-                PRIMARY KEY (message_id, emoji_name)
+                role_id TEXT NOT NULL,
+                UNIQUE (message_id, emoji_name)
             );
         `);
         
@@ -88,6 +90,8 @@ async function setupDatabase() {
                 claimed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        
+        console.log("✅ Database tables ensured.");
 
 
     } catch (error) {
@@ -126,7 +130,6 @@ async function loadState() {
         
         // --- Load Mystery Box State (NEW) ---
         const mysteryBoxResult = await db.query(
-            // NOTE: Must select all expected columns from the mystery_boxes table
             `SELECT channel_id, interval_ms, next_drop_timestamp FROM mystery_boxes WHERE id = 1;`
         );
         
@@ -143,9 +146,8 @@ async function loadState() {
         } else {
             const row = mysteryBoxResult.rows[0];
             globalState.mysteryBoxChannelId = row.channel_id;
-            // Safely convert BIGINT to Number, checking for null/undefined
-            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; 
-            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; 
+            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; // Convert BIGINT to Number
+            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; // Convert BIGINT to Number
         }
         
         console.log(
@@ -153,13 +155,13 @@ async function loadState() {
         );
 
     } catch (error) {
-        // Log the error and re-throw so the bot stops if state cannot be loaded
         console.error("CRITICAL ERROR: Failed to load database state!", error);
         throw error;
     }
 }
 
 async function saveState(channelId, nextNum, restartAnnounceId = null) {
+    // ... (unchanged counting save logic)
     try {
         // Update in-memory state
         globalState.nextNumberChannelId = channelId;
@@ -181,7 +183,7 @@ async function saveState(channelId, nextNum, restartAnnounceId = null) {
 }
 
 /**
- * Saves the Mystery Box configuration state to the database.
+ * Saves the Mystery Box configuration state to the database. (NEW FUNCTION)
  */
 async function saveMysteryBoxState(channelId, intervalMs, nextDropTimestamp) {
     try {
