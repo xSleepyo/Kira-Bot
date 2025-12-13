@@ -1,4 +1,33 @@
 // index.js
+// ===== RENDER FILE VISIBILITY DEBUG =====
+const fs = require("fs");
+const path = require("path");
+
+console.log("=== RENDER STARTUP DEBUG ===");
+console.log("process.cwd():", process.cwd());
+console.log("__filename:", __filename);
+console.log("__dirname:", __dirname);
+
+console.log("Does ./src exist?", fs.existsSync(path.join(process.cwd(), "src")));
+console.log(
+  "Does ./src/index.js exist?",
+  fs.existsSync(path.join(process.cwd(), "src", "index.js"))
+);
+
+console.log(
+  "Directory listing of cwd:",
+  fs.readdirSync(process.cwd())
+);
+
+if (fs.existsSync(path.join(process.cwd(), "src"))) {
+  console.log(
+    "Directory listing of src/:",
+    fs.readdirSync(path.join(process.cwd(), "src"))
+  );
+}
+
+console.log("=== END DEBUG ===");
+// =======================================
 
 const Discord = require("discord.js");
 const express = require("express");
