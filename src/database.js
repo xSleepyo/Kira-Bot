@@ -126,6 +126,7 @@ async function loadState() {
         
         // --- Load Mystery Box State (NEW) ---
         const mysteryBoxResult = await db.query(
+            // NOTE: Must select all expected columns from the mystery_boxes table
             `SELECT channel_id, interval_ms, next_drop_timestamp FROM mystery_boxes WHERE id = 1;`
         );
         
@@ -142,8 +143,9 @@ async function loadState() {
         } else {
             const row = mysteryBoxResult.rows[0];
             globalState.mysteryBoxChannelId = row.channel_id;
-            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; // Convert BIGINT to Number
-            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; // Convert BIGINT to Number
+            // Safely convert BIGINT to Number, checking for null/undefined
+            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; 
+            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; 
         }
         
         console.log(
@@ -151,6 +153,7 @@ async function loadState() {
         );
 
     } catch (error) {
+        // Log the error and re-throw so the bot stops if state cannot be loaded
         console.error("CRITICAL ERROR: Failed to load database state!", error);
         throw error;
     }

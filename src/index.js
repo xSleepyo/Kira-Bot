@@ -8,16 +8,15 @@ const { Events } = require("discord.js");
 // --- Import Modularized Components ---
 const { 
     setupDatabase, loadState, saveState, getState, getDbClient, globalState, 
-    saveMysteryBoxState // Note: Not directly used here, but good practice if needed elsewhere
-} = require('./src/database');
-const { keepAlive, selfPing } = require('./src/utils');
+} = require('./database'); // Note: Assuming database.js is in src/ and this is index.js in src/
+const { keepAlive, selfPing } = require('./utils');
 const { 
     registerHandlers, 
     registerSlashCommands, 
     handleReactionRole, 
     handleMessageDelete 
-} = require('./src/handlers');
-const { startMysteryBoxTimer } = require('./src/mysteryboxes'); // <--- NEW IMPORT
+} = require('./handlers');
+const { startMysteryBoxTimer } = require('./mysteryboxes'); // <--- NEW IMPORT
 
 // --- Global Crash Handlers ---
 process.on("unhandledRejection", (error) => {

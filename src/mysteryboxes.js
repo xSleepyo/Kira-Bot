@@ -2,6 +2,7 @@
 
 const Discord = require("discord.js");
 const { PermissionFlagsBits } = require("discord.js");
+// Import the new database functions
 const { getDbClient, getState, saveMysteryBoxState, globalState } = require("./database");
 
 const PREFIX = process.env.PREFIX || ".";
@@ -584,7 +585,6 @@ async function handleMysteryBoxesCommand(client, message, args) {
                  return message.channel.send("❌ Please mention the user whose reward you are marking as used (e.g., `.mysteryboxes @user use #IDNumber`).");
             }
             
-            // Safely retrieve the 3rd argument (args[2])
             const claimIdToUse = args[2] ? args[2].replace(/^#/, '').toUpperCase() : null; 
             if (!claimIdToUse) {
                  return message.channel.send("❌ Please provide the unique Claim ID to mark as used (e.g., `#A1B2C3D4`).");
