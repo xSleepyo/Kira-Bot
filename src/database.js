@@ -119,9 +119,9 @@ async function loadState() {
             );
         } else {
             const row = countingResult.rows[0];
-            globalState.nextNumberChannelId = row.channel_id;
-            globalState.nextNumber = row.next_number;
-            globalState.restartChannelIdToAnnounce = row.restart_channel_id;
+            globalState.nextNumberChannelId = row.channel_id || null;
+            globalState.nextNumber = parseInt(row.next_number) || 1;
+            globalState.restartChannelIdToAnnounce = row.restart_channel_id || null;
         }
 
         console.log(
@@ -146,8 +146,9 @@ async function loadState() {
         } else {
             const row = mysteryBoxResult.rows[0];
             globalState.mysteryBoxChannelId = row.channel_id;
-            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; // Convert BIGINT to Number
-            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; // Convert BIGINT to Number
+            // Safely convert BIGINT to Number, checking for null/undefined
+            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; 
+            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; 
         }
         
         console.log(
@@ -155,13 +156,13 @@ async function loadState() {
         );
 
     } catch (error) {
+        // Log the error and re-throw so the bot stops if state cannot be loaded
         console.error("CRITICAL ERROR: Failed to load database state!", error);
         throw error;
     }
 }
 
 async function saveState(channelId, nextNum, restartAnnounceId = null) {
-    // ... (unchanged counting save logic)
     try {
         // Update in-memory state
         globalState.nextNumberChannelId = channelId;
@@ -220,5 +221,5 @@ module.exports = {
     getState,
     getDbClient,
     globalState,
-    saveMysteryBoxState, // Export the new save function
+    saveMysteryBoxState, 
 };
