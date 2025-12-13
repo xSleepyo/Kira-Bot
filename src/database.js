@@ -16,8 +16,8 @@ const globalState = {
     
     // Mystery Box State (NEW)
     mysteryBoxChannelId: null,
-    mysteryBoxInterval: null, // Time in milliseconds
-    mysteryBoxNextDrop: null, // Timestamp (Date.now()) of the next drop
+    mysteryBoxInterval: null, // Time in milliseconds (BIGINT from DB)
+    mysteryBoxNextDrop: null, // Timestamp (Date.now()) of the next drop (BIGINT from DB)
     mysteryBoxTimer: null,    // The actual NodeJS Timer object
     
     selfPingInterval: null, // Stays here as it is tied to the running state
@@ -142,8 +142,8 @@ async function loadState() {
         } else {
             const row = mysteryBoxResult.rows[0];
             globalState.mysteryBoxChannelId = row.channel_id;
-            globalState.mysteryBoxInterval = Number(row.interval_ms); // Convert BIGINT to Number
-            globalState.mysteryBoxNextDrop = Number(row.next_drop_timestamp); // Convert BIGINT to Number
+            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; // Convert BIGINT to Number
+            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; // Convert BIGINT to Number
         }
         
         console.log(

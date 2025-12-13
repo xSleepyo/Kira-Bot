@@ -450,7 +450,6 @@ async function handleMysteryBoxesCommand(client, message, args) {
             return handleSetup(message);
             
         case 'start':
-            // ... (Start logic - unchanged)
             if (!globalState.mysteryBoxChannelId || !globalState.mysteryBoxInterval) {
                  return message.channel.send("❌ Mystery box setup is incomplete. Please run `.mysteryboxes setup` first.");
             }
@@ -465,7 +464,6 @@ async function handleMysteryBoxesCommand(client, message, args) {
             return message.channel.send(`✅ Mystery Box drops started! First drop scheduled in **${formatTime(globalState.mysteryBoxInterval)}** in <#${globalState.mysteryBoxChannelId}>.`);
 
         case 'time':
-            // ... (Time logic - unchanged)
             if (!globalState.mysteryBoxTimer || !globalState.mysteryBoxNextDrop) {
                 return message.channel.send("❌ The Mystery Box timer is not currently running. Use `.mysteryboxes start` to begin.");
             }
@@ -476,7 +474,6 @@ async function handleMysteryBoxesCommand(client, message, args) {
             return message.channel.send(`⏳ Next Mystery Box Drop in: **${timeString}**`);
 
         case 'reset':
-            // ... (Reset logic - unchanged)
             stopMysteryBoxTimer();
             setupDrafts.delete(message.author.id); 
             
@@ -492,7 +489,6 @@ async function handleMysteryBoxesCommand(client, message, args) {
             }
 
         case 'rewards':
-            // ... (Rewards logic - unchanged)
             const dbRewards = await dbClient.query(
                 `SELECT reward_description FROM mystery_rewards WHERE guild_id = $1`,
                 [message.guild.id]
@@ -588,7 +584,8 @@ async function handleMysteryBoxesCommand(client, message, args) {
                  return message.channel.send("❌ Please mention the user whose reward you are marking as used (e.g., `.mysteryboxes @user use #IDNumber`).");
             }
             
-            const claimIdToUse = args[2] ? args[2].replace(/^#/, '').toUpperCase() : null; // Remove leading # and uppercase for consistency
+            // Safely retrieve the 3rd argument (args[2])
+            const claimIdToUse = args[2] ? args[2].replace(/^#/, '').toUpperCase() : null; 
             if (!claimIdToUse) {
                  return message.channel.send("❌ Please provide the unique Claim ID to mark as used (e.g., `#A1B2C3D4`).");
             }
@@ -633,7 +630,7 @@ async function handleMysteryBoxesCommand(client, message, args) {
             }
             
         default:
-            // ... (Help Embed - Updated to include new commands)
+            // Help Embed - Updated to include new commands
             const helpEmbed = new Discord.EmbedBuilder()
                 .setColor(0x3498db)
                 .setTitle("Mystery Box Drop Commands")

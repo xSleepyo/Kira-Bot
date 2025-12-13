@@ -6,7 +6,10 @@ const axios = require("axios");
 const { Events } = require("discord.js");
 
 // --- Import Modularized Components ---
-const { setupDatabase, loadState, saveState, getState, getDbClient, globalState } = require('./src/database');
+const { 
+    setupDatabase, loadState, saveState, getState, getDbClient, globalState, 
+    saveMysteryBoxState // Note: Not directly used here, but good practice if needed elsewhere
+} = require('./src/database');
 const { keepAlive, selfPing } = require('./src/utils');
 const { 
     registerHandlers, 
@@ -87,7 +90,7 @@ async function initializeBot() {
             // Register Slash Commands (must be done after client is ready)
             await registerSlashCommands(client);
             
-            // Check for pending restart announcement
+            // Check for pending restart announcement (Counting Game feature)
             if (globalState.restartChannelIdToAnnounce) {
                 try {
                     const channel = await client.channels.fetch(globalState.restartChannelIdToAnnounce);
@@ -117,7 +120,6 @@ async function initializeBot() {
         });
 
         // Register reaction and message delete listeners outside of ClientReady
-        // They use getDbClient() to get a fresh database connection instance if needed.
         client.on("messageReactionAdd", (reaction, user) =>
             handleReactionRole(reaction, user, true, getDbClient()),
         );
