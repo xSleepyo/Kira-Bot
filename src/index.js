@@ -1,129 +1,114 @@
 // index.js
 
+require("dotenv").config();
 const Discord = require("discord.js");
-const express = require("express");
-const axios = require("axios");
-const { Events } = require("discord.js");
+const { IntentsBitField } = require("discord.js");
 
-// --- Import Modularized Components ---
-const { setupDatabase, loadState, saveState, getState, getDbClient, globalState } = require('./src/database');
-const { keepAlive, selfPing } = require('./src/utils');
-const { 
-    registerHandlers, 
-    registerSlashCommands, 
-    handleReactionRole, 
-    handleMessageDelete 
-} = require('./src/handlers');
+const { setupDatabase, loadState, globalState, getDbClient } = require("./database");
+const { registerHandlers, registerSlashCommands, handleReactionRole, handleMessageDelete } = require("./handlers");
+const { startMysteryBoxTimer } = require("./mysteryboxes"); // NEW IMPORT
 
-// --- Global Crash Handlers ---
-process.on("unhandledRejection", (error) => {
-    console.error("CRITICAL UNHANDLED PROMISE REJECTION:", error);
-});
+const token = process.env.DISCORD_TOKEN;
+const selfPingUrl = process.env.SELF_PING_URL;
+const PREFIX = process.env.PREFIX || ".";
 
-process.on("uncaughtException", (error) => {
-    console.error("CRITICAL UNCAUGHT EXCEPTION:", error);
-    try {
-        // Only attempt to destroy client if it exists and is ready
-        if (client && client.isReady()) { 
-             client.destroy();
-        }
-    } catch (e) {
-        console.error("Failed to destroy client:", e);
-    }
-    process.exit(1);
-});
-// -----------------------------
 
-// --- CRITICAL FIX: FLAG TO PREVENT DOUBLE INITIALIZATION ---
-let botInitialized = false;
+// ----------------------------------------------------
+// --- Client Initialization and Intents ---
+// ----------------------------------------------------
 
 const client = new Discord.Client({
     intents: [
-        Discord.GatewayIntentBits.Guilds,
-        Discord.GatewayIntentBits.GuildMessages,
-        Discord.GatewayIntentBits.MessageContent,
-        Discord.GatewayIntentBits.GuildMessageReactions,
+        IntentsBitField.Flags.Guilds,
+        IntentsBitField.Flags.GuildMessages,
+        IntentsBitField.Flags.MessageContent,
+        IntentsBitField.Flags.GuildMembers,
+        IntentsBitField.Flags.GuildMessageReactions,
     ],
     partials: [
-        Discord.Partials.Message,
-        Discord.Partials.Channel,
-        Discord.Partials.Reaction,
+        Discord.Partials.Message, 
+        Discord.Partials.Channel, 
+        Discord.Partials.Reaction
     ],
 });
 
-const token = process.env.TOKEN;
+// ----------------------------------------------------
+// --- Bot Startup ---
+// ----------------------------------------------------
 
-async function initializeBot() {
-    // FIX: Prevents a second instance from logging in immediately if the host tries to spawn two processes.
-    if (botInitialized) {
-        console.log("⚠️ Initialization blocked: Bot is already logged in or recently started.");
-        return;
-    }
-    botInitialized = true;
+client.on("ready", async () => {
+    console.log(`\n🤖 Logged in as ${client.user.tag}!`);
 
     try {
-        console.log("Starting database setup...");
+        // 1. Database Setup & Load
         await setupDatabase();
+        await loadState(client); // Pass client to loadState to resume timers
         
-        console.log("Loading global state...");
-        await loadState(); 
+        // 2. Resume Mystery Box Timer
+        if (globalState.mysteryBoxChannelId && globalState.mysteryBoxInterval && globalState.mysteryBoxNextDrop) {
+             startMysteryBoxTimer(client);
+        }
 
-        // Start Keep Alive Server (for Render)
-        keepAlive(express, axios);
-
-        // Register event handlers from src/handlers.js
-        registerHandlers(client); 
+        // 3. Register Commands & Handlers
+        await registerSlashCommands(client);
+        registerHandlers(client);
+        registerCustomReactionHandlers();
         
-        // Start self-ping to keep the service alive
-        selfPing(axios);
-
-        // --- Bot Login and Initialization ---
-        await client.login(token);
-
-        client.on(Events.ClientReady, async () => {
-            console.log(`✅ Kira Bot is ready! Logged in as ${client.user.tag}`);
-
-            // Register Slash Commands (must be done after client is ready)
-            await registerSlashCommands(client);
-            
-            // Check for pending restart announcement
-            if (globalState.restartChannelIdToAnnounce) {
-                try {
-                    const channel = await client.channels.fetch(globalState.restartChannelIdToAnnounce);
-                    if (channel) {
-                        await channel.send("✅ **Restart complete!** I am back online.");
-                    }
-                } catch (e) {
-                    console.error("Failed to send restart completion message:", e);
-                } finally {
-                    // Clear the stored ID regardless of success/failure
-                    await saveState(globalState.nextNumberChannelId, globalState.nextNumber, null);
-                }
+        // 4. Restart Announcement Check
+        if (globalState.restartChannelIdToAnnounce) {
+            const channel = await client.channels.fetch(globalState.restartChannelIdToAnnounce).catch(() => null);
+            if (channel) {
+                await channel.send("✅ Bot has been restarted and is back online!");
             }
-            
-            // Set bot status
-            client.user.setPresence({
-                activities: [{ name: "🎧 Listening to xSleepyo", type: Discord.ActivityType.Custom }],
-                status: "online",
-            });
+            // Clear the announcement flag in the DB
+            await getDbClient().query(`UPDATE counting SET restart_channel_id = NULL WHERE id = 1`);
+        }
+
+        // 5. Set Activity Status
+        client.user.setActivity(`${PREFIX}help | ${client.guilds.cache.size} servers`, {
+            type: Discord.ActivityType.Watching,
         });
 
-        // Register reaction and message delete listeners outside of ClientReady
-        // They use getDbClient() to get a fresh database connection instance if needed.
-        client.on("messageReactionAdd", (reaction, user) =>
-            handleReactionRole(reaction, user, true, getDbClient()),
-        );
-        client.on("messageReactionRemove", (reaction, user) =>
-            handleReactionRole(reaction, user, false, getDbClient()),
-        );
-        client.on("messageDelete", (message) => handleMessageDelete(message, getDbClient()));
-
+        // 6. Start Self-Ping (If configured)
+        if (selfPingUrl) {
+            const http = require("http");
+            globalState.selfPingInterval = setInterval(() => {
+                http.get(selfPingUrl).on("error", (err) => {
+                    console.error("Self-ping failed:", err.message);
+                });
+            }, 5 * 60 * 1000); // Ping every 5 minutes
+            console.log("✅ Self-ping interval started.");
+        }
 
     } catch (error) {
-        console.error("Bot failed to initialize due to critical error:", error);
-        // Reset the flag so that a retry might work if the error was temporary
-        botInitialized = false; 
+        console.error("CRITICAL ERROR during bot startup:", error);
+        // Cleanly exit if setup fails
+        process.exit(1); 
     }
+});
+
+// ----------------------------------------------------
+// --- Reaction and Delete Handlers ---
+// ----------------------------------------------------
+
+function registerCustomReactionHandlers() {
+    const dbClient = getDbClient();
+
+    client.on(Discord.Events.MessageReactionAdd, (reaction, user) => 
+        handleReactionRole(reaction, user, true, dbClient)
+    );
+
+    client.on(Discord.Events.MessageReactionRemove, (reaction, user) => 
+        handleReactionRole(reaction, user, false, dbClient)
+    );
+
+    client.on(Discord.Events.MessageDelete, (message) => 
+        handleMessageDelete(message, dbClient)
+    );
 }
 
-initializeBot();
+// ----------------------------------------------------
+// --- Login ---
+// ----------------------------------------------------
+
+client.login(token);

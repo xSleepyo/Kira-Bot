@@ -3,6 +3,7 @@
 const Discord = require("discord.js");
 const axios = require("axios");
 const { PermissionFlagsBits, Events } = require("discord.js");
+const { handleMysteryBoxesCommand, handleSetupResponse } = require("./mysteryboxes"); // NEW IMPORT
 
 // Import data and utilities
 const { 
@@ -129,15 +130,26 @@ async function handleMessageCreate(client, message) {
     }
 
     // Check for the prefix
-    if (!command.startsWith(PREFIX)) return;
+    if (!command.startsWith(PREFIX)) {
+        // --- NEW: Check if user is in a Mystery Box setup conversation (Step 3) ---
+        if (message.content.toLowerCase().startsWith(PREFIX + 'mysteryboxes done') || !message.content.startsWith(PREFIX)) {
+            handleSetupResponse(message);
+        }
+        // --------------------------------------------------------------------------
+        return;
+    }
 
     const rawArgs = message.content.slice(PREFIX.length).trim();
     const args = rawArgs.split(/ +/).filter(a => a);
     const commandName = args.shift().toLowerCase();
+    
+    // --- Route to Mystery Boxes Handler (Must come before help/default) ---
+    if (commandName === 'mysteryboxes') {
+        return handleMysteryBoxesCommand(client, message, args);
+    }
 
-    // --- Command: .help ---
+    // --- Command: .help (UPDATED) ---
     if (commandName === "help") {
-        // ... (Help Embed Logic - Identical to original)
         const helpEmbed = new Discord.EmbedBuilder()
             .setColor(0x3498db)
             .setTitle("Kira Bot Commands")
@@ -150,12 +162,12 @@ async function handleMessageCreate(client, message) {
                 },
                 {
                     name: "Moderation & Utility (Admin Required)",
-                    // FIX APPLIED HERE: Changed to clearly list .gifperms sub-commands
                     value: 
                         "`.purge [number]` - Delete messages.\n" +
                         "`.gifperms @user` - Grant **one-time** GIF/link permission.\n" +
                         "`.gifperms @user perm(anent)` - Grant **permanent** GIF/link permission.\n" +
                         "`.gifperms @user revoke` - **Remove** permanent access.\n" +
+                        "`.mysteryboxes setup/start/time/reset/rewards/check/use` - Manage the scheduled Mystery Box drops and claims.\n" + // UPDATED LINE
                         "`.restart` - Restarts the bot process.",
                     inline: false,
                 },
@@ -182,7 +194,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .ship ---
     else if (commandName === "ship") {
-        // ... (Ship Logic - Identical to original, using imported generateShipName)
+        // ... (Ship Logic - Unchanged)
         const user1 = message.author;
 
         let user2 = message.mentions.users.first();
@@ -244,7 +256,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .purge ---
     else if (commandName === "purge") {
-        // ... (Purge Logic - Identical to original)
+        // ... (Purge Logic - Unchanged)
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.ManageMessages)) {
             return message.channel.send("❌ You do not have permission to manage messages.");
         }
@@ -264,8 +276,9 @@ async function handleMessageCreate(client, message) {
         }
     }
     
-    // --- Command: .gifperms (UPDATED LOGIC FOR PERMANENT STATUS) ---
+    // --- Command: .gifperms ---
     else if (commandName === "gifperms") {
+        // ... (Gif Perms Logic - Unchanged)
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to manage GIF permissions.");
         }
@@ -333,8 +346,9 @@ async function handleMessageCreate(client, message) {
     }
     // --- End of .gifperms Command ---
 
-    // --- Command: .restart (UPDATED FOR PM2) ---
+    // --- Command: .restart ---
     else if (commandName === "restart") {
+        // ... (Restart Logic - Unchanged)
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to restart the bot.");
         }
@@ -355,11 +369,16 @@ async function handleMessageCreate(client, message) {
             if (globalState.selfPingInterval) {
                 clearInterval(globalState.selfPingInterval);
             }
+            
+            // 4. Clean up mystery box timer
+            if (globalState.mysteryBoxTimer) {
+                clearTimeout(globalState.mysteryBoxTimer);
+            }
 
-            // 4. Destroy the Discord client connection
+            // 5. Destroy the Discord client connection
             client.destroy();
             
-            // 5. Exit the process immediately. PM2 catches exit code 0 and automatically restarts.
+            // 6. Exit the process immediately. PM2 catches exit code 0 and automatically restarts.
             console.log("Process exiting cleanly. PM2 will handle the relaunch.");
             process.exit(0); 
 
@@ -378,7 +397,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .userinfo ---
     else if (commandName === "userinfo") {
-        // ... (User Info Logic - Identical to original)
+        // ... (User Info Logic - Unchanged)
         const member = message.mentions.members.first() || message.member;
         const user = member.user;
 
@@ -413,7 +432,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .8ball ---
     else if (commandName === "8ball") {
-        // ... (8ball Logic - Identical to original, using imported eightBallResponses)
+        // ... (8ball Logic - Unchanged)
         const question = args.join(" ");
 
         if (!question) {
@@ -437,9 +456,9 @@ async function handleMessageCreate(client, message) {
         message.channel.send({ embeds: [eightBallEmbed] });
     }
 
-    // --- Command: .status (FIXED BACKTICK) ---
+    // --- Command: .status ---
     else if (commandName === "status") {
-        // ... (Status Logic - Identical to original, using imported cooldown and client)
+        // ... (Status Logic - Unchanged)
         if (statusCooldown.has(message.channel.id)) {
             return; 
         }
@@ -477,10 +496,10 @@ async function handleMessageCreate(client, message) {
         message.channel.send({ embeds: [statusEmbed] });
     }
 
-    // --- Command: .joke (FIXED API ENDPOINT) ---
+    // --- Command: .joke ---
     else if (commandName === "joke") {
+        // ... (Joke Logic - Unchanged)
         try {
-            // FIX: Corrected API endpoint back to v2 for reliability
             const response = await axios.get(
                 "https://v2.jokeapi.dev/joke/Any?blacklistFlags=racist,sexist,explicit&type=single",
             );
@@ -506,6 +525,7 @@ async function handleMessageCreate(client, message) {
 
 // --- SLASH COMMAND REGISTER ---
 async function registerSlashCommands(client) {
+    // ... (rest of the registerSlashCommands function is unchanged)
     const commands = [
         // Counting Game Commands
         {
@@ -598,6 +618,7 @@ async function handleInteractionCreate(interaction) {
 
     // --- /reactionrole Handler ---
     else if (interaction.commandName === "reactionrole") {
+        // ... (Reaction Role Logic - Unchanged)
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({
                 content: "❌ You need Administrator permissions to set up reaction roles.",
@@ -666,6 +687,7 @@ async function handleInteractionCreate(interaction) {
 
     // --- Counting Game Handlers ---
     else if (interaction.commandName === "countinggame") {
+        // ... (Counting Game Logic - Unchanged)
         const channel = interaction.options.getChannel("channel");
 
         if (!channel || channel.type !== Discord.ChannelType.GuildText) {
@@ -683,6 +705,7 @@ async function handleInteractionCreate(interaction) {
 
         channel.send(`**Counting Game Created!** Start counting from **1**!`);
     } else if (interaction.commandName === "resetcounting") {
+        // ... (Reset Counting Logic - Unchanged)
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({
                 content: "You do not have permission to use this command.",
