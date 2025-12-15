@@ -1,33 +1,25 @@
 // src/index.js
 
-const { Client, GatewayIntentBits, Events } = require("discord.js");
-const dotenv = require("dotenv");
-const express = require("express"); 
-// Import all necessary functions from database.js
-const { setupDatabase, loadState, saveState, globalState, getDbClient } = require("./database"); 
-const { registerHandlers, registerSlashCommands, handleReactionRole, handleMessageDelete } = require("./handlers");
-const { keepAlive } = require("./utils");
-// FIX: Importing the correct function name (startMysteryBoxTimer) to fix the TypeError
-const { startMysteryBoxTimer } = require("./mysteryboxes"); 
-const countdowns = require("./countdown"); 
+const Discord = require("discord.js");
+const express = require("express");
+const axios = require("axios");
+const { Events } = require("discord.js");
 
-dotenv.config();
+// --- Import Modularized Components ---
+const { 
+    setupDatabase, loadState, saveState, getDbClient, globalState, loadConfig // Added loadConfig
+} = require('./database'); 
+const { keepAlive, selfPing } = require('./utils');
+const { 
+    registerHandlers, 
+    registerSlashCommands, 
+    handleReactionRole, 
+    handleMessageDelete 
+} = require('./handlers');
+const { startMysteryBoxTimer } = require('./mysteryboxes'); 
 
-// Initialize the Express app for keep-alive
-const app = express();
-
-// --- Discord Client Setup ---
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.DirectMessages,
-    ],
-    partials: ['MESSAGE', 'CHANNEL', 'REACTION'],
-});
+const countdowns = require('./countdown'); 
+// ------------------------------------
 
 // --- Global Crash Handlers ---
 process.on("unhandledRejection", (error) => {
@@ -45,69 +37,114 @@ process.on("uncaughtException", (error) => {
     }
     process.exit(1);
 });
-// ----------------------------
+// -----------------------------
 
+let botInitialized = false;
 
-// --- Initialization Function ---
-async function initializeBot(client, app) {
+const client = new Discord.Client({
+    intents: [
+        Discord.GatewayIntentBits.Guilds,
+        Discord.GatewayIntentBits.GuildMessages,
+        Discord.GatewayIntentBits.MessageContent,
+        Discord.GatewayIntentBits.GuildMessageReactions,
+    ],
+    partials: [
+        Discord.Partials.Message, 
+        Discord.Partials.Channel, 
+        Discord.Partials.Reaction,
+    ],
+});
+
+async function initializeBot() {
+    if (botInitialized) return;
+
     try {
         // 1. Initialize Database
-        await setupDatabase(); // Using setupDatabase to match your export
-        
-        // 2. Load Global State (updates properties on the globalState object)
-        await loadState(); 
+        await setupDatabase();
+        await loadState();
 
-        // 3. Register all event handlers
+        // 2. Start Keep Alive Server (for web service hosting like Render/Heroku)
+        keepAlive(client);
+        
+        // 3. Register Event Handlers (messageCreate, interactionCreate)
         registerHandlers(client);
 
-        // 4. Register slash commands and resume timers on ready
-        client.once(Events.ClientReady, async () => { // FIX: Using Events.ClientReady
+        // 4. Login to Discord
+        await client.login(process.env.DISCORD_TOKEN);
+
+        // 5. Ready Event
+        client.on(Events.ClientReady, async () => {
+            if (!client.user) {
+                console.error("Client user is null on ready.");
+                return;
+            }
+
+            // A. Set the ready state
+            globalState.isReady = true;
             console.log(`Bot is ready! Logged in as ${client.user.tag}`);
-            
+
+            // B. Load Config for all Guilds (NEW)
+            for (const guild of client.guilds.cache.values()) {
+                await loadConfig(guild.id);
+                console.log(`[CONFIG] Loaded settings for guild: ${guild.name}`);
+            }
+
+            // C. Register Commands
             await registerSlashCommands(client);
+
+            // D. Handle Restart Announcement
+            if (globalState.restartChannelIdToAnnounce) {
+                try {
+                    const channel = await client.channels.fetch(globalState.restartChannelIdToAnnounce);
+                    if (channel) {
+                        channel.send("✅ Bot restart complete. All systems online.");
+                    }
+                } catch (e) {
+                    console.error("Failed to announce restart:", e);
+                }
+                await saveState(globalState.nextNumberChannelId, globalState.nextNumber, null); // Clear announcement ID
+            }
             
-            // 5. Resume features that rely on timers/intervals
-            // FIX: Corrected function call to startMysteryBoxTimer
-            await startMysteryBoxTimer(client, globalState); 
-            await countdowns.resumeCountdowns(client);
+            // E. Start Timers (Mystery Boxes)
+            if (globalState.mysteryBoxChannelId && globalState.mysteryBoxInterval) {
+                startMysteryBoxTimer(client, false); 
+            }
             
-            // 6. Handle post-restart message (if necessary)
-            const restartChannelId = globalState.restartChannelIdToAnnounce; // Accessing the correct globalState property
-            if (restartChannelId) {
-                const channel = await client.channels.fetch(restartChannelId).catch(() => null);
-                if (channel) {
-                    await channel.send("✅ Bot restart complete. All systems online.");
-                    
-                    // Clear the restart flag in the database
-                    const nextChannelId = globalState.nextNumberChannelId;
-                    const nextNumber = globalState.nextNumber;
-                    await saveState(nextChannelId, nextNumber, null); 
+            // F. Resume Active Countdowns
+            if (globalState.activeCountdowns.length > 0) {
+                console.log(`[COUNTDOWN] Resuming ${globalState.activeCountdowns.length} active countdown(s)...`);
+                for (const countdown of globalState.activeCountdowns) {
+                    countdowns.startCountdownTimer(
+                        client, 
+                        countdown.channel_id, 
+                        countdown.message_id, 
+                        countdown.title, 
+                        Number(countdown.target_timestamp) 
+                    );
                 }
             }
-        });
-        
-        // 7. Reaction Role and Message Delete Handlers
-        const dbClient = getDbClient();
-        client.on(Events.MessageReactionAdd, (reaction, user) => handleReactionRole(reaction, user, true, dbClient));
-        client.on(Events.MessageReactionRemove, (reaction, user) => handleReactionRole(reaction, user, false, dbClient));
-        client.on(Events.MessageDelete, (message) => handleMessageDelete(message, dbClient));
-
-        // 8. FIX: Handle the client's internal error events
-        client.on('error', (error) => {
-            console.error('CRITICAL CLIENT ERROR (Client.on(\'error\')):', error);
+            
+            // G. Set bot status
+            client.user.setPresence({
+                activities: [{ name: "🎧 Listening to xSleepyo", type: Discord.ActivityType.Custom }],
+                status: "online",
+            });
         });
 
-        // 9. Start the Keep-Alive Server
-        keepAlive(app); // Assumes keepAlive and app are defined
+        // 6. Reaction and Message Delete Handlers (Attached to client outside the ready event)
+        client.on("messageReactionAdd", (reaction, user) =>
+            handleReactionRole(reaction, user, true, getDbClient()),
+        );
+        client.on("messageReactionRemove", (reaction, user) =>
+            handleReactionRole(reaction, user, false, getDbClient()),
+        );
+        client.on("messageDelete", (message) => handleMessageDelete(message, getDbClient()));
 
-        // 10. Log in
-        await client.login(process.env.TOKEN);
-
+        botInitialized = true;
     } catch (error) {
         console.error("Bot failed to initialize due to critical error:", error);
-        client.destroy();
-        process.exit(1); 
+        botInitialized = false; 
     }
 }
 
-initializeBot(client, app);
+initializeBot();

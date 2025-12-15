@@ -229,7 +229,7 @@ async function setConfig(guildId, feature, enabled) {
 }
 
 // --- STATE SAVING ---
-
+// ... (saveState, saveMysteryBoxState, saveCountdownState, deleteCountdownState remain the same) ...
 async function saveState(channelId, nextNum, restartAnnounceId = null) {
     try {
         globalState.nextNumberChannelId = channelId;
