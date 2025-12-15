@@ -73,16 +73,18 @@ function stopMysteryBoxTimer() {
 
 async function sendMysteryBoxDrop(client) {
     stopMysteryBoxTimer();
-
-    const dbClient = getDbClient();
-    const guildId = globalState.mysteryBoxChannelId ? (await client.channels.fetch(globalState.mysteryBoxChannelId)).guildId : null;
     
-    if (!globalState.mysteryBoxChannelId || !guildId) {
-        console.error("Mystery box drop failed: Channel ID not set or guild ID missing.");
+    // [FIXED]: Use globalState.mysteryBoxGuildId which is now loaded/saved
+    const guildId = globalState.mysteryBoxGuildId;
+    const channelId = globalState.mysteryBoxChannelId;
+
+    if (!channelId || !guildId) {
+        console.error("Mystery box drop failed: Channel ID or Guild ID not set.");
         return;
     }
 
     let rewards;
+    const dbClient = getDbClient();
     try {
         const rewardResult = await dbClient.query(
             `SELECT reward_description FROM mystery_rewards WHERE guild_id = $1`,
@@ -96,7 +98,7 @@ async function sendMysteryBoxDrop(client) {
     }
 
     if (rewards.length === 0) {
-        const channel = await client.channels.fetch(globalState.mysteryBoxChannelId).catch(() => null);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
         if (channel) {
              channel.send("⚠️ The mystery box drop failed! No rewards have been configured yet. Use `.mysteryboxes setup` to add rewards.");
         }
@@ -104,10 +106,11 @@ async function sendMysteryBoxDrop(client) {
         return;
     }
 
-    const channel = await client.channels.fetch(globalState.mysteryBoxChannelId).catch(() => null);
+    const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) {
-        console.error(`Mystery box drop failed: Channel ID ${globalState.mysteryBoxChannelId} is invalid.`);
-        await saveMysteryBoxState(null, null, null); 
+        console.error(`Mystery box drop failed: Channel ID ${channelId} is invalid. Clearing config.`);
+        // Clear config for the problematic guild
+        await saveMysteryBoxState(guildId, null, null, null); 
         return;
     }
 
@@ -231,10 +234,13 @@ async function sendMysteryBoxDrop(client) {
 function startMysteryBoxTimer(client, updateNextDrop = false) {
     stopMysteryBoxTimer();
     
+    const guildId = globalState.mysteryBoxGuildId; // Use the stored ID
     const intervalMs = globalState.mysteryBoxInterval;
     const nextDropTimestamp = globalState.mysteryBoxNextDrop;
+    const channelId = globalState.mysteryBoxChannelId;
     
-    if (!intervalMs || !globalState.mysteryBoxChannelId) return;
+    // [FIXED]: Check for guildId as well.
+    if (!intervalMs || !channelId || !guildId) return;
 
     let delayMs;
     let nextDrop;
@@ -242,7 +248,8 @@ function startMysteryBoxTimer(client, updateNextDrop = false) {
     if (updateNextDrop || !nextDropTimestamp) {
         nextDrop = Date.now() + intervalMs;
         delayMs = intervalMs;
-        saveMysteryBoxState(globalState.mysteryBoxChannelId, intervalMs, nextDrop);
+        // [FIXED]: Pass all four arguments including guildId
+        saveMysteryBoxState(guildId, channelId, intervalMs, nextDrop);
     } else {
         nextDrop = nextDropTimestamp;
         delayMs = nextDrop - Date.now();
@@ -260,22 +267,30 @@ function startMysteryBoxTimer(client, updateNextDrop = false) {
 
 async function handleSetup(message) {
     const userId = message.author.id;
-    if (setupDrafts.has(userId)) return message.channel.send("⚠️ You are already in a setup process.");
+    // [FIX]: Check if setup is already running for this user in this guild
+    if (setupDrafts.has(userId) && setupDrafts.get(userId).guildId === message.guild.id) {
+        return message.channel.send("⚠️ You are already in a setup process. Type `cancel` to stop it.");
+    }
 
-    setupDrafts.set(userId, { step: 1, channel: null, interval: null, rewards: [] });
+    setupDrafts.set(userId, { step: 1, guildId: message.guild.id, channel: null, interval: null, rewards: [] });
     message.channel.send("**Mystery Box Setup (Step 1/3):** Please **mention the channel** where you want the drops.");
 }
 
 async function handleSetupResponse(message) {
     const userId = message.author.id;
     const draft = setupDrafts.get(userId);
-    if (!draft) return;
+    if (!draft || draft.guildId !== message.guild.id) return; // Ignore drafts from other guilds
 
     const dbClient = getDbClient();
 
+    if (message.content.toLowerCase() === 'cancel') {
+        setupDrafts.delete(userId);
+        return message.channel.send("✅ Mystery Box setup cancelled.");
+    }
+
     if (draft.step === 1) {
         const channel = message.mentions.channels.first();
-        if (!channel || channel.type !== Discord.ChannelType.GuildText) return message.channel.send("❌ Invalid channel.");
+        if (!channel || channel.type !== Discord.ChannelType.GuildText || channel.guild.id !== message.guild.id) return message.channel.send("❌ Invalid channel. Please mention a text channel in this server.");
         draft.channel = channel;
         draft.step = 2;
         message.channel.send(`✅ Channel set to ${channel}. Step 2/3: Drop interval? e.g., 1d 5h`);
@@ -284,19 +299,12 @@ async function handleSetupResponse(message) {
 
     if (draft.step === 2) {
         const intervalMs = parseTimeInterval(message.content);
-        if (!intervalMs) return message.channel.send("❌ Invalid time format.");
+        if (!intervalMs || intervalMs < 60000) return message.channel.send("❌ Invalid time format or interval is less than 1 minute (1m).");
         draft.interval = intervalMs;
         draft.step = 3;
-        message.channel.send(`✅ Interval set to ${formatTime(intervalMs)}. Step 3/3: Enter rewards, one by one. Type \`${COMPLETION_COMMAND}\` when done.`);
-        try {
-            await dbClient.query(`DELETE FROM mystery_rewards WHERE guild_id = $1`, [message.guild.id]);
-            draft.rewards = [];
-            message.channel.send("🗑️ Previous rewards cleared.");
-        } catch (e) {
-            console.error(e);
-            message.channel.send("❌ Error clearing previous rewards. Setup aborted.");
-            setupDrafts.delete(userId);
-        }
+        message.channel.send(`✅ Interval set to ${formatTime(intervalMs)}. Step 3/3: Enter rewards, one by one. Type \`${COMPLETION_COMMAND}\` when done. (Previous rewards will be cleared on completion)`);
+        // We will clear old rewards on COMPLETION, not here, to allow for a clean cancel.
+        draft.rewards = [];
         return;
     }
 
@@ -305,21 +313,31 @@ async function handleSetupResponse(message) {
         if (rewardText.toLowerCase() === COMPLETION_COMMAND) {
             if (draft.rewards.length === 0) return message.channel.send("❌ Enter at least one reward.");
             try {
+                // Clear old rewards before inserting new ones
+                await dbClient.query(`DELETE FROM mystery_rewards WHERE guild_id = $1`, [message.guild.id]);
+                
                 const rewardQueries = draft.rewards.map(reward => 
                     dbClient.query(`INSERT INTO mystery_rewards (guild_id, reward_description) VALUES ($1, $2)`, [message.guild.id, reward])
                 );
                 await Promise.all(rewardQueries);
-                await saveMysteryBoxState(draft.channel.id, draft.interval, null);
-                message.channel.send(`🎉 Setup Complete! Channel: ${draft.channel}, Interval: ${formatTime(draft.interval)}, Rewards Added: ${draft.rewards.length}`);
+                
+                // [FIXED]: Pass all four arguments including guildId
+                await saveMysteryBoxState(message.guild.id, draft.channel.id, draft.interval, Date.now() + draft.interval);
+                
+                // Start timer immediately upon successful setup
+                startMysteryBoxTimer(message.client, false); 
+
+                message.channel.send(`🎉 Setup Complete! Drops will occur in ${draft.channel} every **${formatTime(draft.interval)}**.\n**${draft.rewards.length}** new rewards configured.`);
             } catch (e) {
                 console.error(e);
-                message.channel.send("❌ Database error. Setup aborted.");
+                message.channel.send("❌ Database error during finalization. Setup aborted.");
             } finally {
                 setupDrafts.delete(userId);
             }
             return;
         }
 
+        if (rewardText.length > 255) return message.channel.send("❌ Reward description is too long (max 255 characters).");
         draft.rewards.push(rewardText);
         message.channel.send(`✅ Reward #${draft.rewards.length} added: \`${rewardText}\`. Enter next or type \`${COMPLETION_COMMAND}\` to finish.`);
     }
@@ -330,27 +348,65 @@ async function handleSetupResponse(message) {
 async function handleMysteryBoxesCommand(client, message, args) {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.channel.send("❌ Admin required.");
     
-    if (setupDrafts.has(message.author.id) && message.content.toLowerCase() !== COMPLETION_COMMAND) return handleSetupResponse(message);
-
+    // Check for active setup draft and defer to response handler if not 'done'
+    const userId = message.author.id;
+    if (setupDrafts.has(userId) && setupDrafts.get(userId).guildId === message.guild.id && message.content.toLowerCase() !== COMPLETION_COMMAND) {
+        return handleSetupResponse(message);
+    }
+    
     const command = args[0] ? args[0].toLowerCase() : 'help';
     const dbClient = getDbClient();
+
+    // Handle setup completion (separate from switch to handle the completion command)
+    if (command === COMPLETION_COMMAND.slice(PREFIX.length)) {
+        if (setupDrafts.has(userId) && setupDrafts.get(userId).guildId === message.guild.id) {
+            return handleSetupResponse(message); // Let response handler finalize
+        }
+    }
+
 
     switch (command) {
         case 'setup': return handleSetup(message);
         case 'start': 
-            if (!globalState.mysteryBoxChannelId || !globalState.mysteryBoxInterval) return message.channel.send("❌ Setup incomplete.");
-            if (globalState.mysteryBoxTimer) return message.channel.send(`⚠️ Timer already running! Next drop in ${formatTime(globalState.mysteryBoxNextDrop - Date.now())}.`);
-            await saveMysteryBoxState(globalState.mysteryBoxChannelId, globalState.mysteryBoxInterval, Date.now() + globalState.mysteryBoxInterval);
+            if (!globalState.mysteryBoxChannelId || !globalState.mysteryBoxInterval || globalState.mysteryBoxGuildId !== message.guild.id) {
+                 // Check if config exists for this guild only (a crude check since globalState is single-guild)
+                const configCheck = await dbClient.query(`SELECT * FROM mystery_boxes WHERE guild_id = $1`, [message.guild.id]);
+                if (configCheck.rows.length === 0) return message.channel.send("❌ Setup incomplete for this server.");
+                
+                // For a multi-guild bot, you'd load the config here and start the timer for *this* guild's config.
+                // Given the current single-guild globalState, we assume the user intends to manage the stored config.
+                // Since this section is only reached if the globalState is NOT set, or set to another guild, 
+                // the user should probably be asked to run setup. For now, we return setup incomplete.
+                return message.channel.send("❌ Setup incomplete. Please run `.mysteryboxes setup`.");
+            }
+
+            if (globalState.mysteryBoxTimer) return message.channel.send(`⚠️ Timer already running! Next drop in **${formatTime(globalState.mysteryBoxNextDrop - Date.now())}**.`);
+            
+            // [FIXED]: Pass all four arguments including guildId. This ensures the correct guild is updated/used.
+            // We use the message.guild.id as the source of truth for the command execution context.
+            await saveMysteryBoxState(message.guild.id, globalState.mysteryBoxChannelId, globalState.mysteryBoxInterval, Date.now() + globalState.mysteryBoxInterval);
+            
             startMysteryBoxTimer(client, false);
-            return message.channel.send(`✅ Mystery Box drops started! First drop in ${formatTime(globalState.mysteryBoxInterval)} in <#${globalState.mysteryBoxChannelId}>.`);
+            return message.channel.send(`✅ Mystery Box drops started! First drop in **${formatTime(globalState.mysteryBoxInterval)}** in <#${globalState.mysteryBoxChannelId}>.`);
+            
         case 'time':
-            if (!globalState.mysteryBoxTimer || !globalState.mysteryBoxNextDrop) return message.channel.send("❌ Timer not running.");
+            if (!globalState.mysteryBoxTimer || !globalState.mysteryBoxNextDrop || globalState.mysteryBoxGuildId !== message.guild.id) return message.channel.send("❌ Timer not running or not configured for this guild.");
             return message.channel.send(`⏳ Next Mystery Box Drop in: **${formatTime(globalState.mysteryBoxNextDrop - Date.now())}**`);
+            
         case 'reset':
             stopMysteryBoxTimer();
             setupDrafts.delete(message.author.id);
             try {
-                await saveMysteryBoxState(null, null, null);
+                // Clear state if it belongs to this guild
+                if (globalState.mysteryBoxGuildId === message.guild.id) {
+                    globalState.mysteryBoxGuildId = null;
+                    globalState.mysteryBoxChannelId = null;
+                    globalState.mysteryBoxInterval = null;
+                    globalState.mysteryBoxNextDrop = null;
+                }
+                
+                // Delete from DB
+                await dbClient.query(`DELETE FROM mystery_boxes WHERE guild_id = $1`, [message.guild.id]);
                 await dbClient.query(`DELETE FROM mystery_rewards WHERE guild_id = $1`, [message.guild.id]);
                 await dbClient.query(`DELETE FROM mystery_claims WHERE guild_id = $1`, [message.guild.id]);
                 return message.channel.send("✅ Mystery Boxes completely reset.");
@@ -359,9 +415,9 @@ async function handleMysteryBoxesCommand(client, message, args) {
                 return message.channel.send("❌ Error during reset.");
             }
         case 'rewards':
-            const dbRewards = await dbClient.query(`SELECT reward_description FROM mystery_rewards WHERE guild_id = $1`, [message.guild.id]).catch(e => ({ rows: [] }));
-            if (dbRewards.rows.length === 0) return message.channel.send("ℹ️ No rewards configured yet.");
-            const rewardsList = dbRewards.rows.map((row, idx) => `**${idx+1}.** ${row.reward_description}`).join('\n');
+            const dbRewards = await dbClient.query(`SELECT id, reward_description FROM mystery_rewards WHERE guild_id = $1 ORDER BY id`, [message.guild.id]).catch(e => ({ rows: [] }));
+            if (dbRewards.rows.length === 0) return message.channel.send("ℹ️ No rewards configured yet. Run `.mysteryboxes setup`.");
+            const rewardsList = dbRewards.rows.map((row) => `**#${row.id}.** ${row.reward_description}`).join('\n');
             const rewardsEmbed = new Discord.EmbedBuilder()
                 .setColor(0x0099ff)
                 .setTitle(`🎁 Current Rewards (${dbRewards.rows.length})`)
@@ -377,6 +433,7 @@ async function handleMysteryBoxesCommand(client, message, args) {
                 if (claimsResult.rows.length === 0) return message.channel.send(`ℹ️ ${targetUserCheck.username} has no claims.`);
                 let unusedList = '', usedList = '', unusedCount = 0, usedCount = 0;
                 claimsResult.rows.forEach(row => {
+                    // Format claimed_at to something readable if needed, otherwise use what's returned
                     const status = row.is_used ? '✅ USED' : '⚠️ UNUSED';
                     const line = `\`#${row.claim_id}\` | ${row.reward_description} (${status})\n`;
                     if (row.is_used) { usedList += line; usedCount++; } else { unusedList += line; unusedCount++; }
@@ -406,8 +463,7 @@ async function handleMysteryBoxesCommand(client, message, args) {
                 await dbClient.query(`UPDATE mystery_claims SET is_used = TRUE WHERE id = $1`, [claim.id]);
                 return message.channel.send(`✅ Claim ID **#${claimIdToUse}** marked USED.`);
             } catch (e) { console.error(e); return message.channel.send("❌ Error updating claim."); }
-        case 'done':
-            if (setupDrafts.has(message.author.id)) return handleSetupResponse(message);
+        // case 'done' handled before switch
         default:
             const helpEmbed = new Discord.EmbedBuilder()
                 .setColor(0x3498db)
@@ -419,7 +475,7 @@ async function handleMysteryBoxesCommand(client, message, args) {
                     { name: "`.mysteryboxes time`", value:"Shows remaining time.", inline:true },
                     { name: "`.mysteryboxes rewards`", value:"View all rewards.", inline:true },
                     { name: "`.mysteryboxes check @user`", value:"View user's claims.", inline:false },
-                    { name: "`.mysteryboxes @user use #ID`", value:"Mark a claim as used.", inline:false },
+                    { name: "`.mysteryboxes use @user #ID`", value:"Mark a claim as used.", inline:false },
                     { name: "`.mysteryboxes reset`", value:"Stop timer and clear all.", inline:false }
                 );
             return message.channel.send({ embeds: [helpEmbed] });

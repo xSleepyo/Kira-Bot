@@ -17,6 +17,7 @@ const globalState = {
     // Mystery Box State 
     // NOTE: This object only holds the config for the LAST guild loaded/saved.
     // For a multi-guild bot, this should be a Map: Map<guild_id, config>
+    mysteryBoxGuildId: null, // <-- ADDED for the fix
     mysteryBoxChannelId: null,
     mysteryBoxInterval: null, // Time in milliseconds (BIGINT from DB)
     mysteryBoxNextDrop: null, // Timestamp (Date.now()) of the next drop (BIGINT from DB)
@@ -147,6 +148,7 @@ async function loadState() {
         // [FIX] Removed the crashing INSERT block
         if (mysteryBoxResult.rows.length > 0) {
             const row = mysteryBoxResult.rows[0];
+            globalState.mysteryBoxGuildId = row.guild_id; // <-- FIXED: Load guild_id
             globalState.mysteryBoxChannelId = row.channel_id;
             globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; 
             globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; 
@@ -155,7 +157,7 @@ async function loadState() {
         }
         
         console.log(
-            `[DB] Loaded Mystery Box State - Channel ID: ${globalState.mysteryBoxChannelId}, Interval: ${globalState.mysteryBoxInterval}ms, Next Drop: ${globalState.mysteryBoxNextDrop}`
+            `[DB] Loaded Mystery Box State - Guild ID: ${globalState.mysteryBoxGuildId}, Channel ID: ${globalState.mysteryBoxChannelId}, Interval: ${globalState.mysteryBoxInterval}ms, Next Drop: ${globalState.mysteryBoxNextDrop}`
         );
 
         // --- Load Active Countdowns ---
@@ -196,6 +198,7 @@ async function saveMysteryBoxState(guildId, channelId, intervalMs, nextDropTimes
     try {
         // NOTE: This global state update is still incorrect for a multi-guild bot
         // as it only saves the *last* guild's config to a single object.
+        globalState.mysteryBoxGuildId = guildId; // <-- FIXED: Save guild_id to state
         globalState.mysteryBoxChannelId = channelId;
         globalState.mysteryBoxInterval = intervalMs;
         globalState.mysteryBoxNextDrop = nextDropTimestamp;
