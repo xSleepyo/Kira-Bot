@@ -14,7 +14,9 @@ const globalState = {
     nextNumber: 1,
     restartChannelIdToAnnounce: null,
     
-    // Mystery Box State (FIXES "interval_ms" error)
+    // Mystery Box State 
+    // NOTE: This object only holds the config for the LAST guild loaded/saved.
+    // For a multi-guild bot, this should be a Map: Map<guild_id, config>
     mysteryBoxChannelId: null,
     mysteryBoxInterval: null, // Time in milliseconds (BIGINT from DB)
     mysteryBoxNextDrop: null, // Timestamp (Date.now()) of the next drop (BIGINT from DB)
@@ -23,12 +25,7 @@ const globalState = {
     // --- NEW Countdown State ---
     activeCountdowns: [], // Array to hold { channel_id, message_id, title, target_timestamp }
     
-    // --- NEW Feature Toggle State (Per Guild) ---
-    // Structure: { 'guildId': { 'games': true, 'fun': true, 'gifperms': true, 'mysteryboxes': true } }
-    config: {}, 
-
     selfPingInterval: null, 
-    isReady: false, // Tracks if bot has fully initialized all state
 };
 
 async function setupDatabase() {
@@ -48,188 +45,137 @@ async function setupDatabase() {
         await db.query(`
             DO $$ 
             BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'counting'::regclass AND attname = 'restart_channel_id') THEN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='counting' AND column_name='restart_channel_id') THEN
                     ALTER TABLE counting ADD COLUMN restart_channel_id TEXT;
                 END IF;
             END $$;
-        `);
-        await db.query(`INSERT INTO counting (id, next_number) VALUES (1, 1) ON CONFLICT (id) DO NOTHING;`);
-        
+        `).catch(e => console.log("Restart channel column check skipped or failed (might already exist).", e.message));
+
         // --- REACTION ROLES TABLE ---
         await db.query(`
             CREATE TABLE IF NOT EXISTS reaction_roles (
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 message_id TEXT NOT NULL,
-                emoji TEXT NOT NULL,
-                role_id TEXT NOT NULL
+                channel_id TEXT NOT NULL,
+                emoji_name TEXT NOT NULL,
+                role_id TEXT NOT NULL,
+                UNIQUE (message_id, emoji_name)
             );
         `);
-
-        // --- MYSTERY BOXES TABLE ---
+        
+        // --- MYSTERY BOX CONFIG TABLE (FIXED: Uses guild_id as PK to satisfy NOT NULL constraint) ---
         await db.query(`
             CREATE TABLE IF NOT EXISTS mystery_boxes (
-                id INTEGER PRIMARY KEY,
+                guild_id TEXT PRIMARY KEY,
                 channel_id TEXT,
                 interval_ms BIGINT,
                 next_drop_timestamp BIGINT
             );
         `);
-        // Ensure initial row exists
-        await db.query(`INSERT INTO mystery_boxes (id) VALUES (1) ON CONFLICT (id) DO NOTHING;`);
-        
-        // --- COUNTDOWNS TABLE ---
+
+        // --- MYSTERY REWARDS TABLE ---
         await db.query(`
-            CREATE TABLE IF NOT EXISTS active_countdowns (
+            CREATE TABLE IF NOT EXISTS mystery_rewards (
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
-                message_id TEXT,
+                reward_description TEXT NOT NULL
+            );
+        `);
+        
+        // --- MYSTERY CLAIMS TABLE ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS mystery_claims (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                claim_id TEXT UNIQUE NOT NULL,
+                reward_description TEXT NOT NULL,
+                is_used BOOLEAN DEFAULT FALSE,
+                claimed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        
+        // --- COUNTDOWN TABLE (NEW) ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS countdowns (
+                channel_id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 target_timestamp BIGINT NOT NULL
             );
         `);
-
-        // --- CONFIG TABLE (NEW) ---
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS config (
-                guild_id TEXT PRIMARY KEY,
-                games_enabled BOOLEAN DEFAULT TRUE,
-                fun_enabled BOOLEAN DEFAULT TRUE,
-                gifperms_enabled BOOLEAN DEFAULT TRUE,
-                mysteryboxes_enabled BOOLEAN DEFAULT TRUE
-            );
-        `);
-
-
+        
         console.log("✅ Database tables ensured.");
 
+
     } catch (error) {
-        console.error("CRITICAL ERROR: Failed to connect or initialize database:", error);
+        console.error("CRITICAL ERROR: Database setup failed!", error);
         throw error;
     }
 }
 
-
-// --- STATE LOADING ---
-
 async function loadState() {
     try {
-        // Load Counting State
-        const countingResult = await db.query(`SELECT * FROM counting WHERE id = 1;`);
-        if (countingResult.rows.length > 0) {
+        // --- Load Counting State ---
+        const countingResult = await db.query(
+            `SELECT channel_id, next_number, restart_channel_id FROM counting WHERE id = 1;`
+        );
+
+        if (countingResult.rows.length === 0) {
+            await db.query(
+                `INSERT INTO counting (id, channel_id, next_number, restart_channel_id) VALUES (1, $1, $2, $3) ON CONFLICT (id) DO NOTHING;`,
+                [null, 1, null],
+            );
+        } else {
             const row = countingResult.rows[0];
-            globalState.nextNumberChannelId = row.channel_id;
-            globalState.nextNumber = row.next_number;
-            globalState.restartChannelIdToAnnounce = row.restart_channel_id;
+            globalState.nextNumberChannelId = row.channel_id || null;
+            globalState.nextNumber = parseInt(row.next_number) || 1;
+            globalState.restartChannelIdToAnnounce = row.restart_channel_id || null;
         }
 
-        // Load Mystery Box State
-        const mysteryBoxResult = await db.query(`SELECT * FROM mystery_boxes WHERE id = 1;`);
+        console.log(
+            `[DB] Loaded Counting State - Channel ID: ${globalState.nextNumberChannelId}, Next Number: ${globalState.nextNumber}, Restart Announce Channel: ${globalState.restartChannelIdToAnnounce}`
+        );
+        
+        // --- Load Mystery Box State ---
+        // Load all rows, but only use the first one for the single-object globalState
+        const mysteryBoxResult = await db.query(
+            `SELECT guild_id, channel_id, interval_ms, next_drop_timestamp FROM mystery_boxes;`
+        );
+        
+        // [FIX] Removed the crashing INSERT block
         if (mysteryBoxResult.rows.length > 0) {
             const row = mysteryBoxResult.rows[0];
             globalState.mysteryBoxChannelId = row.channel_id;
-            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null;
-            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null;
-            console.log(`[DB] Loaded Mystery Box state. Channel: ${globalState.mysteryBoxChannelId}, Next Drop: ${globalState.mysteryBoxNextDrop}`);
+            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; 
+            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; 
+        } else {
+             console.log("[DB] No Mystery Box config found. State is null, awaiting configuration.");
         }
         
-        // Load Active Countdowns
-        const countdownResult = await db.query(`SELECT * FROM active_countdowns;`);
-        globalState.activeCountdowns = countdownResult.rows;
+        console.log(
+            `[DB] Loaded Mystery Box State - Channel ID: ${globalState.mysteryBoxChannelId}, Interval: ${globalState.mysteryBoxInterval}ms, Next Drop: ${globalState.mysteryBoxNextDrop}`
+        );
+
+        // --- Load Active Countdowns ---
+        const countdownResult = await db.query(
+            `SELECT channel_id, message_id, title, target_timestamp FROM countdowns;`
+        );
+        
+        globalState.activeCountdowns = countdownResult.rows.filter(row => {
+            const target = Number(row.target_timestamp);
+            return target > Date.now();
+        });
+
         console.log(`[DB] Loaded ${globalState.activeCountdowns.length} active countdown(s).`);
 
     } catch (error) {
         console.error("CRITICAL ERROR: Failed to load database state!", error);
+        throw error;
     }
 }
 
-// --- CONFIGURATION FUNCTIONS (NEW) ---
-
-/**
- * Loads configuration for a specific guild and caches it in globalState.
- * @param {string} guildId The ID of the guild.
- * @returns {object} The guild's configuration.
- */
-async function loadConfig(guildId) {
-    try {
-        const result = await db.query(
-            `SELECT * FROM config WHERE guild_id = $1;`,
-            [guildId]
-        );
-
-        if (result.rowCount === 0) {
-            // Insert default config if none exists for this guild
-            await db.query(
-                `INSERT INTO config (guild_id) VALUES ($1);`,
-                [guildId]
-            );
-            const defaultConfig = {
-                games: true,
-                fun: true,
-                gifperms: true,
-                mysteryboxes: true,
-            };
-            globalState.config[guildId] = defaultConfig;
-            return defaultConfig;
-        }
-
-        const row = result.rows[0];
-        const config = {
-            games: row.games_enabled,
-            fun: row.fun_enabled,
-            gifperms: row.gifperms_enabled,
-            mysteryboxes: row.mysteryboxes_enabled,
-        };
-        globalState.config[guildId] = config;
-        return config;
-
-    } catch (error) {
-        console.error(`[DB] Failed to load config for guild ${guildId}:`, error);
-        // Return defaults on failure
-        return {
-            games: true,
-            fun: true,
-            gifperms: true,
-            mysteryboxes: true,
-        };
-    }
-}
-
-/**
- * Sets the enabled state for a specific feature and guild.
- * @param {string} guildId The ID of the guild.
- * @param {string} feature The feature key ('games', 'fun', 'gifperms', 'mysteryboxes').
- * @param {boolean} enabled The desired state (true/false).
- * @returns {boolean} True if successful, false otherwise.
- */
-async function setConfig(guildId, feature, enabled) {
-    try {
-        const columnName = `${feature}_enabled`;
-
-        await db.query(
-            `INSERT INTO config (guild_id, ${columnName}) 
-             VALUES ($1, $2)
-             ON CONFLICT (guild_id) 
-             DO UPDATE SET ${columnName} = $2;`,
-            [guildId, enabled]
-        );
-
-        // Update global state cache
-        if (!globalState.config[guildId]) {
-            await loadConfig(guildId); 
-        }
-        globalState.config[guildId][feature] = enabled;
-
-        return true;
-    } catch (error) {
-        console.error(`[DB] Failed to set config for guild ${guildId}, feature ${feature}:`, error);
-        return false;
-    }
-}
-
-// --- STATE SAVING ---
-// ... (saveState, saveMysteryBoxState, saveCountdownState, deleteCountdownState remain the same) ...
 async function saveState(channelId, nextNum, restartAnnounceId = null) {
     try {
         globalState.nextNumberChannelId = channelId;
@@ -245,53 +191,31 @@ async function saveState(channelId, nextNum, restartAnnounceId = null) {
     }
 }
 
-async function saveMysteryBoxState(channelId, intervalMs, nextDropTimestamp) {
+// [FIXED] Updated to accept guildId and use UPSERT logic for per-guild configuration
+async function saveMysteryBoxState(guildId, channelId, intervalMs, nextDropTimestamp) {
     try {
+        // NOTE: This global state update is still incorrect for a multi-guild bot
+        // as it only saves the *last* guild's config to a single object.
         globalState.mysteryBoxChannelId = channelId;
         globalState.mysteryBoxInterval = intervalMs;
         globalState.mysteryBoxNextDrop = nextDropTimestamp;
 
         await db.query(
-            `UPDATE mystery_boxes SET channel_id = $1, interval_ms = $2, next_drop_timestamp = $3 WHERE id = 1;`,
-            [channelId, intervalMs, nextDropTimestamp],
+            // Use UPSERT logic with guild_id as PK
+            `INSERT INTO mystery_boxes (guild_id, channel_id, interval_ms, next_drop_timestamp) 
+             VALUES ($1, $2, $3, $4) 
+             ON CONFLICT (guild_id) 
+             DO UPDATE SET channel_id = $2, interval_ms = $3, next_drop_timestamp = $4;`,
+            [guildId, channelId, intervalMs, nextDropTimestamp],
         );
         
-        console.log(`[DB] Mystery Box state saved. Channel: ${channelId}, Next Drop: ${nextDropTimestamp}`);
+        console.log(`[DB] Mystery Box state saved for guild ${guildId}. Channel: ${channelId}, Next Drop: ${nextDropTimestamp}`);
 
     } catch (error) {
-        console.error("CRITICAL ERROR: Failed to save mystery box state! (mysteryboxes)", error);
+        console.error("CRITICAL ERROR: Failed to save mystery box state!", error);
     }
 }
 
-async function saveCountdownState(guildId, channelId, messageId, title, targetTimestamp) {
-    try {
-        await db.query(
-            `INSERT INTO active_countdowns (guild_id, channel_id, message_id, title, target_timestamp) 
-             VALUES ($1, $2, $3, $4, $5);`,
-            [guildId, channelId, messageId, title, targetTimestamp],
-        );
-
-        // Reload state to update in-memory list (not strictly necessary but safer)
-        await loadState();
-        
-    } catch (error) {
-        console.error("CRITICAL ERROR: Failed to save countdown state! (active_countdowns)", error);
-    }
-}
-
-async function deleteCountdownState(messageId) {
-    try {
-        await db.query(
-            `DELETE FROM active_countdowns WHERE message_id = $1;`,
-            [messageId]
-        );
-        // Reload state to update in-memory list
-        await loadState();
-
-    } catch (error) {
-        console.error("CRITICAL ERROR: Failed to delete countdown state! (active_countdowns)", error);
-    }
-}
 
 const getState = () => globalState;
 const getDbClient = () => db;
@@ -303,10 +227,5 @@ module.exports = {
     getState,
     getDbClient,
     globalState,
-    saveMysteryBoxState,
-    saveCountdownState,
-    deleteCountdownState,
-    loadConfig,
-    setConfig,
-    getConfig: (guildId) => globalState.config[guildId], // Helper to access cached config
+    saveMysteryBoxState, 
 };
