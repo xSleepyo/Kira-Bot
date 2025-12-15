@@ -4,6 +4,7 @@ const Discord = require("discord.js");
 const axios = require("axios");
 const { PermissionFlagsBits, Events } = require("discord.js");
 const { handleMysteryBoxesCommand, handleSetupResponse } = require("./mysteryboxes"); // NEW IMPORT
+const countdowns = require("./countdown"); // <--- ADDITION 1: NEW IMPORT
 
 // Import data and utilities
 const { 
@@ -149,7 +150,7 @@ async function handleMessageCreate(client, message) {
     }
 
     // --- Command: .help (UPDATED) ---
-    if (commandName === "help") {
+    else if (commandName === "help") {
         const helpEmbed = new Discord.EmbedBuilder()
             .setColor(0x3498db)
             .setTitle("Kira Bot Commands")
@@ -157,7 +158,7 @@ async function handleMessageCreate(client, message) {
             .addFields(
                 {
                     name: "Admin Commands (Slash)",
-                    value: "`/countinggame` - Setup the counting channel.\n`/resetcounting` - Reset the count to 1.\n`/embed` - Starts an interactive conversation to build an embed.\n`/reactionrole` - Set up a reaction role on a message.",
+                    value: "`/countinggame` - Setup the counting channel.\n`/resetcounting` - Reset the count to 1.\n`/embed` - Starts an interactive conversation to build an embed.\n`/reactionrole` - Set up a reaction role on a message.\n`/countdown` - Starts a self-updating countdown.", // Added /countdown to help
                     inline: false,
                 },
                 {
@@ -167,7 +168,7 @@ async function handleMessageCreate(client, message) {
                         "`.gifperms @user` - Grant **one-time** GIF/link permission.\n" +
                         "`.gifperms @user perm(anent)` - Grant **permanent** GIF/link permission.\n" +
                         "`.gifperms @user revoke` - **Remove** permanent access.\n" +
-                        "`.mysteryboxes setup/start/time/reset/rewards/check/use` - Manage the scheduled Mystery Box drops and claims.\n" + // UPDATED LINE
+                        "`.mysteryboxes setup/start/time/reset/rewards/check/use` - Manage the scheduled Mystery Box drops and claims.\n" + 
                         "`.restart` - Restarts the bot process.",
                     inline: false,
                 },
@@ -194,7 +195,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .ship ---
     else if (commandName === "ship") {
-        // ... (Ship Logic - Unchanged)
+        // ... (Ship Logic) ...
         const user1 = message.author;
 
         let user2 = message.mentions.users.first();
@@ -256,7 +257,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .purge ---
     else if (commandName === "purge") {
-        // ... (Purge Logic - Unchanged)
+        // ... (Purge Logic) ...
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.ManageMessages)) {
             return message.channel.send("❌ You do not have permission to manage messages.");
         }
@@ -278,7 +279,7 @@ async function handleMessageCreate(client, message) {
     
     // --- Command: .gifperms ---
     else if (commandName === "gifperms") {
-        // ... (Gif Perms Logic - Unchanged)
+        // ... (Gif Perms Logic) ...
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to manage GIF permissions.");
         }
@@ -348,7 +349,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .restart ---
     else if (commandName === "restart") {
-        // ... (Restart Logic - Unchanged)
+        // ... (Restart Logic) ...
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to restart the bot.");
         }
@@ -374,11 +375,13 @@ async function handleMessageCreate(client, message) {
             if (globalState.mysteryBoxTimer) {
                 clearTimeout(globalState.mysteryBoxTimer);
             }
+            
+            // 5. Clean up countdown timers (if implemented in globalState) - Assuming this is in index/countdown.js
 
-            // 5. Destroy the Discord client connection
+            // 6. Destroy the Discord client connection
             client.destroy();
             
-            // 6. Exit the process immediately. PM2 catches exit code 0 and automatically restarts.
+            // 7. Exit the process immediately. PM2 catches exit code 0 and automatically restarts.
             console.log("Process exiting cleanly. PM2 will handle the relaunch.");
             process.exit(0); 
 
@@ -397,7 +400,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .userinfo ---
     else if (commandName === "userinfo") {
-        // ... (User Info Logic - Unchanged)
+        // ... (User Info Logic) ...
         const member = message.mentions.members.first() || message.member;
         const user = member.user;
 
@@ -432,7 +435,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .8ball ---
     else if (commandName === "8ball") {
-        // ... (8ball Logic - Unchanged)
+        // ... (8ball Logic) ...
         const question = args.join(" ");
 
         if (!question) {
@@ -458,7 +461,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .status ---
     else if (commandName === "status") {
-        // ... (Status Logic - Unchanged)
+        // ... (Status Logic) ...
         if (statusCooldown.has(message.channel.id)) {
             return; 
         }
@@ -498,7 +501,7 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .joke ---
     else if (commandName === "joke") {
-        // ... (Joke Logic - Unchanged)
+        // ... (Joke Logic) ...
         try {
             const response = await axios.get(
                 "https://v2.jokeapi.dev/joke/Any?blacklistFlags=racist,sexist,explicit&type=single",
@@ -587,6 +590,35 @@ async function registerSlashCommands(client) {
                 },
             ],
         },
+        
+        // <--- ADDITION 2: NEW COUNTDOWN SLASH COMMAND OBJECT --->
+        { 
+            name: "countdown",
+            description: "Starts a self-updating countdown to a specific time/event (Admin only).",
+            default_member_permissions: PermissionFlagsBits.Administrator.toString(),
+            options: [
+                {
+                    name: "title",
+                    description: "A brief description of what the countdown is for.",
+                    type: Discord.ApplicationCommandOptionType.String,
+                    required: true,
+                },
+                {
+                    name: "channel",
+                    description: "The text channel where the countdown message should be posted.",
+                    type: Discord.ApplicationCommandOptionType.Channel,
+                    required: true,
+                    channel_types: [Discord.ChannelType.GuildText],
+                },
+                {
+                    name: "time",
+                    description: "The countdown duration (e.g., 1d 5h 30m). Units: y, mo, d, h, m, s.",
+                    type: Discord.ApplicationCommandOptionType.String,
+                    required: true,
+                },
+            ],
+        },
+        // <--- END ADDITION 2 --->
     ];
 
     try {
@@ -618,7 +650,7 @@ async function handleInteractionCreate(interaction) {
 
     // --- /reactionrole Handler ---
     else if (interaction.commandName === "reactionrole") {
-        // ... (Reaction Role Logic - Unchanged)
+        // ... (Reaction Role Logic) ...
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({
                 content: "❌ You need Administrator permissions to set up reaction roles.",
@@ -684,10 +716,18 @@ async function handleInteractionCreate(interaction) {
             interaction.editReply({ content: errorMessage, ephemeral: true });
         }
     }
+    
+    // <--- ADDITION 3: NEW COUNTDOWN COMMAND HANDLER --->
+    else if (interaction.commandName === "countdown") {
+        // The actual execution logic is handled by the execute function in countdown.js
+        return countdowns.execute(interaction);
+    }
+    // <--- END ADDITION 3 --->
+
 
     // --- Counting Game Handlers ---
     else if (interaction.commandName === "countinggame") {
-        // ... (Counting Game Logic - Unchanged)
+        // ... (Counting Game Logic) ...
         const channel = interaction.options.getChannel("channel");
 
         if (!channel || channel.type !== Discord.ChannelType.GuildText) {
@@ -705,7 +745,7 @@ async function handleInteractionCreate(interaction) {
 
         channel.send(`**Counting Game Created!** Start counting from **1**!`);
     } else if (interaction.commandName === "resetcounting") {
-        // ... (Reset Counting Logic - Unchanged)
+        // ... (Reset Counting Logic) ...
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({
                 content: "You do not have permission to use this command.",
