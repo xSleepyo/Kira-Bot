@@ -7,20 +7,19 @@ const {
     ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder,
 } = require("discord.js");
 const { handleMysteryBoxesCommand, handleSetupResponse } = require("./mysteryboxes");
-const countdowns = require("./countdown"); // This is now an object containing { data, execute, ... }
+const countdowns = require("./countdown"); 
 
 // Import data and utilities
 const { 
     PREFIX, COLOR_MAP, GIF_PERMS_ROLE_NAME, PROHIBITED_WORDS, 
     generateShipName, eightBallResponses, statusCooldown, 
     COOLDOWN_TIME, userEmbedDrafts, startEmbedConversation,
-    handleEmbedDraftResponse // <-- RESTORED for embed handling
+    handleEmbedDraftResponse
 } = require('./utils');
 
 // Import database functions and state
 const { 
     saveState, getState, globalState, getDbClient,
-    // [FIXED] Removed invalid imports that caused 'getConfig is not a function' crash.
 } = require('./database');
 
 // --- CONFIGURATION ---
@@ -30,12 +29,10 @@ const DEFAULT_COLOR = COLOR_MAP.default;
 function registerHandlers(client) {
     client.on("messageCreate", (message) => handleMessageCreate(client, message));
     client.on("interactionCreate", handleInteractionCreate);
-    // Reaction and MessageDelete are registered in index.js for better flow
 }
 
 
 // --- Slash Command Definitions ---
-// This array defines the structure for registering slash commands
 const slashCommands = [
     // Counting Command
     new SlashCommandBuilder()
@@ -99,16 +96,9 @@ const slashCommands = [
 
 
 // --- Slash Command Registration ---
-
-/**
- * Registers slash commands globally (or per-guild in development).
- * @param {Discord.Client} client 
- */
 async function registerSlashCommands(client) {
-    // 1. Combine local commands with imported commands
     const allCommands = [...slashCommands];
     
-    // 2. Add imported countdown command data
     if (countdowns.data) {
         allCommands.push(countdowns.data);
     } else {
@@ -130,12 +120,11 @@ async function registerSlashCommands(client) {
 async function handleInteractionCreate(interaction) {
     if (!interaction.isCommand()) return;
 
-    // Check if the command is one of our imported commands
+    // Handle imported commands (like /countdown)
     if (countdowns.data && interaction.commandName === countdowns.data.name) {
         return countdowns.execute(interaction);
     }
     
-    // Check if the command is one of our locally defined commands
     const command = slashCommands.find(c => c.name === interaction.commandName);
 
     if (!command) return;
@@ -170,11 +159,9 @@ async function handleInteractionCreate(interaction) {
                 return interaction.reply({ embeds: [embed] });
 
             case 'embed':
-                // Deferred to the utility function
                 return startEmbedConversation(interaction, userEmbedDrafts); 
                 
             case 'reactionrole':
-                // Simple version of reaction role command
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: "🚫 You need Administrator permissions.", ephemeral: true });
                 }
@@ -219,11 +206,10 @@ async function handleInteractionCreate(interaction) {
                 return interaction.editReply(`✅ Reaction role message created in ${rrChannel} with ${pairs.length} roles.`);
 
             case 'help':
-                // Restored basic help for robustness
                 const helpEmbed = new EmbedBuilder()
                     .setColor(DEFAULT_COLOR)
                     .setTitle("Kira Bot Help Menu")
-                    .setDescription("Use the text command `.help` for a complete list of commands.")
+                    .setDescription("Use the text command `.help` to view a full list of commands.")
                     .addFields(
                         { name: "Text Commands (Prefix: `.`):", value: "`.ping`, `.8ball <question>`, `.count <number>`, `.mysteryboxes` (admin setup), `.setrestartchannel <#channel | none>`, **.purge**, **.gifperms**, **.restart**, **.userinfo**, **.status**" },
                         { name: "Slash Commands:", value: "`/help`, `/countdown <title> <channel> <time>`, `/setcounting <channel>`, `/ship <user1> [user2]`, `/embed`, `/reactionrole` (Admin)" }
@@ -250,15 +236,13 @@ async function handleInteractionCreate(interaction) {
 async function handleMessageCreate(client, message) {
     if (message.author.bot) return;
 
-    // --- Embed Builder Response Handler (must run first) ---
+    // --- Embed Builder Response Handler ---
     if (userEmbedDrafts.has(message.author.id)) {
-        // Check if user is trying to cancel
         if (message.content.toLowerCase() === 'cancel') {
             userEmbedDrafts.delete(message.author.id);
             return message.channel.send("✅ Embed builder cancelled.");
         }
         
-        // Call the response handler to resume interactive embed functionality
         if (handleEmbedDraftResponse) {
              return handleEmbedDraftResponse(message, userEmbedDrafts);
         }
@@ -267,7 +251,6 @@ async function handleMessageCreate(client, message) {
     // --- Mystery Box Setup Response Handler ---
     if (message.guild && message.content.startsWith(PREFIX)) {
         if (handleSetupResponse) {
-             // Let the mystery box setup handler manage the conversation state
             await handleSetupResponse(message);
         }
     }
@@ -280,21 +263,19 @@ async function handleMessageCreate(client, message) {
     
     // --- Mystery Box Text Command ---
     if (command === 'mysteryboxes') {
-        // The handler is responsible for checking if the user is in setup mode
         return handleMysteryBoxesCommand(client, message, args);
     }
     
     // --- Standard Text Commands ---
     switch (command) {
         case 'help':
-            // Guaranteed basic .help functionality
             const helpEmbed = new EmbedBuilder()
                 .setColor(DEFAULT_COLOR)
                 .setTitle("Kira Bot Text Commands")
                 .setDescription("List of available text and slash commands:")
                 .addFields(
-                    { name: "General/Utility", value: "`.ping`, `.8ball <question>`, `.userinfo [@user]`, `.status <text>` (Admin)" },
-                    { name: "Counting Game", value: "`.count <number>`, `.setrestartchannel <#channel | none>` (Admin)" },
+                    { name: "General/Utility", value: "`.ping` (Check latency), `.8ball <question>` (Ask the magic 8-ball), `.userinfo [@user]`, `.status` (View Bot Stats)" },
+                    { name: "Counting Game", value: "`.count <number>` (Continue the game), `.setrestartchannel <#channel | none>` (Admin)" },
                     { name: "Admin Tools", value: "`.purge <amount>`, `.gifperms`, `.restart`, `.mysteryboxes`" }
                 )
                 .setFooter({ text: `Prefix: ${PREFIX}` });
@@ -356,10 +337,19 @@ async function handleMessageCreate(client, message) {
             if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return message.reply("🚫 You need the `Administrator` permission to restart the bot.");
             }
-            await message.channel.send("🔄 Restarting bot...");
-            // Gracefully destroy the client before exiting the process
-            client.destroy(); 
-            process.exit(0); 
+            
+            // [FIXED] Use .then() and setTimeout to ensure the message is sent before the process exits
+            message.channel.send("🔄 Restarting bot, please wait...").then(() => {
+                // Give Discord's network time to send the message before terminating
+                setTimeout(() => {
+                    client.destroy(); 
+                    process.exit(0);
+                }, 500); 
+            }).catch(e => {
+                console.error("Failed to send restart message but attempting restart anyway:", e);
+                client.destroy(); 
+                process.exit(0); 
+            });
             break;
 
         case 'userinfo':
@@ -390,33 +380,47 @@ async function handleMessageCreate(client, message) {
             break;
 
         case 'status':
-            if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return message.reply("🚫 You need the `Administrator` permission to set the bot's status.");
-            }
-            const statusText = args.slice(1).join(" ");
-            if (!statusText) {
-                return message.reply("❌ Please provide the status text. Example: `.status Listening to music`");
-            }
+            // [FIXED] Implement Bot Status Report (Ping, Memory, Uptime)
             
-            // Set activity type to Listening (2) for a common custom status look
-            client.user.setPresence({
-                activities: [{ name: statusText, type: Discord.ActivityType.Listening }],
-                status: "online",
-            });
-            message.channel.send(`✅ Bot status set to **Listening to ${statusText}**.`);
+            // 1. Calculate Uptime
+            const uptime = client.uptime;
+            const totalSeconds = Math.floor(uptime / 1000);
+            const days = Math.floor(totalSeconds / 86400);
+            const hours = Math.floor(totalSeconds / 3600) % 24;
+            const minutes = Math.floor(totalSeconds / 60) % 60;
+            const seconds = totalSeconds % 60;
+            const uptimeString = `${days}d, ${hours}h, ${minutes}m, ${seconds}s`;
+
+            // 2. Calculate Memory Usage (Node.js process memory)
+            const memoryUsage = process.memoryUsage().heapUsed / 1024 / 1024; // MB
+            
+            // 3. Create the Embed that mimics the visual report
+            const statusEmbed = new Discord.EmbedBuilder()
+                .setColor(0x00ff00) 
+                .setTitle("Bot Status Report")
+                .addFields(
+                    { name: "Connection", value: `**Online**`, inline: true },
+                    { name: "Ping", value: `**${client.ws.ping}ms**`, inline: true },
+                    { name: "Servers", value: `**${client.guilds.cache.size}**`, inline: true },
+                    { name: "\u200B", value: "\u200B", inline: false }, // Spacer
+                    { name: "Memory", value: `**${memoryUsage.toFixed(2)} MB**`, inline: false },
+                    { name: "\u200B", value: "\u200B", inline: false }, // Spacer
+                    { name: "Uptime", value: `**${uptimeString}**`, inline: false }
+                )
+                .setFooter({ text: `Updated Live • Today at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}` });
+
+            message.channel.send({ embeds: [statusEmbed] });
             break;
 
         case 'count':
-            // --- Counting Game Logic ---
-            if (!message.guild) return; // Only allow in guilds
+            if (!message.guild) return; 
             
-            const state = globalState; // Use global state for efficiency
+            const state = globalState; 
             
             if (state.nextNumberChannelId && message.channel.id !== state.nextNumberChannelId) {
                 return message.reply(`This is not the counting channel. Go to <#${state.nextNumberChannelId}>.`);
             }
             
-            // If the channel hasn't been set, and the user is an admin, set it now
             if (!state.nextNumberChannelId) {
                  if (message.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     await saveState(message.channel.id, 1, null);
@@ -427,18 +431,15 @@ async function handleMessageCreate(client, message) {
             }
 
             const number = parseInt(message.content);
-            if (isNaN(number)) return; // Ignore non-numeric messages in the counting channel
+            if (isNaN(number)) return; 
 
             if (number === state.nextNumber) {
-                // Correct number
                 state.nextNumber++;
                 await saveState(state.nextNumberChannelId, state.nextNumber, state.restartChannelIdToAnnounce);
                 message.react('✅').catch(() => {});
             } else {
-                // Incorrect number
                 const restartMessage = `❌ **${message.author.username}** messed up! They should have said **${state.nextNumber}**, but said **${number}**.\nCounting restarts from **1**!`;
                 
-                // Announce restart in a separate channel if configured
                 if (state.restartChannelIdToAnnounce) {
                     const restartChannel = message.guild.channels.cache.get(state.restartChannelIdToAnnounce);
                     if (restartChannel) {
@@ -446,13 +447,10 @@ async function handleMessageCreate(client, message) {
                     }
                 }
                 
-                // Announce restart in the counting channel
                 message.channel.send(restartMessage);
                 
-                // Reset state
                 await saveState(state.nextNumberChannelId, 1, state.restartChannelIdToAnnounce);
                 
-                // Delete the incorrect message
                 message.delete().catch(() => {});
             }
             break;
@@ -469,8 +467,6 @@ async function handleMessageCreate(client, message) {
             
             await saveState(globalState.nextNumberChannelId, globalState.nextNumber, channelMention.id);
             return message.channel.send(`✅ Counting restart announcements will be sent to ${channelMention}.`);
-
-        // ... (other text commands) ...
     }
 }
 
@@ -517,7 +513,6 @@ async function handleReactionRole(reaction, user, added, db) {
 
         if (!role) {
             console.error(`Role ID ${roleId} not found.`);
-            // Optionally, delete the entry from the DB here
             return;
         }
 
@@ -535,6 +530,7 @@ async function handleReactionRole(reaction, user, added, db) {
 // --- MESSAGE DELETE CLEANUP ---
 async function handleMessageDelete(message, db) {
     if (message.partial) return;
+    if (!message.guild) return;
 
     try {
         // Cleanup Reaction Roles
@@ -557,13 +553,7 @@ async function handleMessageDelete(message, db) {
         
         if (cdResult.rowCount > 0) {
              console.log(`[DB CLEANUP] Removed countdown entry for deleted message ID: ${message.id}`);
-             // Stop the timer if it was running
-             // NOTE: Since the countdown module is imported, we should use its stop function if available
-             // Assuming a stop function that clears *all* timers, as per common patterns.
-             if (countdowns.stopAllTimers) {
-                 // In a real multi-guild bot, you'd need a way to stop *only* the timer for the deleted message ID.
-                 // For simplicity, we just log that the DB entry is gone. The timer will eventually fail on edit/fetch.
-             }
+             // Note: countdowns.stopAllTimers is for a full bot shutdown; individual cleanup is handled by timer failure.
         }
 
     } catch (error) {
