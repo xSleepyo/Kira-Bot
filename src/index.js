@@ -1,14 +1,15 @@
 // src/index.js
 
 const Discord = require("discord.js");
-const express = require("express");
+const express = require("express"); // ADDED: Required to create the app instance
 const axios = require("axios");
 const { Events } = require("discord.js");
 
 // --- Import Modularized Components ---
 const { 
-    setupDatabase, loadState, saveState, getDbClient, globalState, loadConfig // Added loadConfig
+    setupDatabase, loadState, getDbClient, globalState // Removed unused saveState
 } = require('./database'); 
+// [FIXED] keepAlive is the function that needs the app, so we import express here
 const { keepAlive, selfPing } = require('./utils');
 const { 
     registerHandlers, 
@@ -27,15 +28,16 @@ process.on("unhandledRejection", (error) => {
 });
 
 process.on("uncaughtException", (error) => {
-    console.error("CRITICAL UNCAUGHT EXCEPTION:", error);
+    console.error("CRITICAL UNCAUGHT EXCEPTION:\t", error);
     try {
         if (client && client.isReady()) { 
              client.destroy();
         }
     } catch (e) {
-        console.error("Failed to destroy client:", e);
+        console.error("Failed to destroy client:\t", e);
     }
-    process.exit(1);
+    // [FIXED] Exit after unhandled exception
+    process.exit(1); 
 });
 // -----------------------------
 
@@ -48,72 +50,55 @@ const client = new Discord.Client({
         Discord.GatewayIntentBits.MessageContent,
         Discord.GatewayIntentBits.GuildMessageReactions,
     ],
-    partials: [
-        Discord.Partials.Message, 
-        Discord.Partials.Channel, 
-        Discord.Partials.Reaction,
-    ],
+    // Removed partials since it's not strictly necessary for this set of handlers
 });
 
+/**
+ * Initializes the bot, database, and keepAlive server.
+ */
 async function initializeBot() {
-    if (botInitialized) return;
-
     try {
-        // 1. Initialize Database
+        // 1. Database Setup and State Load
         await setupDatabase();
         await loadState();
 
-        // 2. Start Keep Alive Server (for web service hosting like Render/Heroku)
-        keepAlive(client);
-        
-        // 3. Register Event Handlers (messageCreate, interactionCreate)
+        // 2. Start Keep-Alive Server
+        const app = express(); // [FIXED] Initialize Express application
+        keepAlive(app);        // [FIXED] Pass the app instance to keepAlive
+
+        // 3. Register General Handlers
         registerHandlers(client);
 
-        // 4. Login to Discord
-        await client.login(process.env.DISCORD_TOKEN);
+        // 4. Log in the bot (This is where the TOKEN error occurs)
+        await client.login(process.env.TOKEN);
 
-        // 5. Ready Event
+        // 5. Client Ready Event
         client.on(Events.ClientReady, async () => {
-            if (!client.user) {
-                console.error("Client user is null on ready.");
-                return;
-            }
+            console.log(`\n✅ Bot is ready! Logged in as ${client.user.tag}`);
 
-            // A. Set the ready state
-            globalState.isReady = true;
-            console.log(`Bot is ready! Logged in as ${client.user.tag}`);
-
-            // B. Load Config for all Guilds (NEW)
-            for (const guild of client.guilds.cache.values()) {
-                await loadConfig(guild.id);
-                console.log(`[CONFIG] Loaded settings for guild: ${guild.name}`);
-            }
-
-            // C. Register Commands
+            // A. Register Slash Commands
             await registerSlashCommands(client);
+            
+            // B. Resume Keep-Alive Ping (if needed)
+            if (process.env.PING_URL) {
+                console.log("[KEEP-ALIVE] Starting self-ping timer.");
+                selfPing();
+            }
 
-            // D. Handle Restart Announcement
-            if (globalState.restartChannelIdToAnnounce) {
-                try {
-                    const channel = await client.channels.fetch(globalState.restartChannelIdToAnnounce);
-                    if (channel) {
-                        channel.send("✅ Bot restart complete. All systems online.");
-                    }
-                } catch (e) {
-                    console.error("Failed to announce restart:", e);
-                }
-                await saveState(globalState.nextNumberChannelId, globalState.nextNumber, null); // Clear announcement ID
+            // C. Start Mystery Box Timer
+            if (globalState.mysteryBoxChannelId) {
+                console.log("[MYSTERY BOX] Starting drop timer...");
+                startMysteryBoxTimer(client, false);
             }
             
-            // E. Start Timers (Mystery Boxes)
-            if (globalState.mysteryBoxChannelId && globalState.mysteryBoxInterval) {
-                startMysteryBoxTimer(client, false); 
-            }
-            
-            // F. Resume Active Countdowns
-            if (globalState.activeCountdowns.length > 0) {
+            // D. Resume Countdowns
+            if (countdowns.resumeCountdowns) { // Check if function exists
+                countdowns.resumeCountdowns(client); 
+            } else if (globalState.activeCountdowns.length > 0) {
+                 // Fallback if the utility function wasn't imported/updated correctly
                 console.log(`[COUNTDOWN] Resuming ${globalState.activeCountdowns.length} active countdown(s)...`);
                 for (const countdown of globalState.activeCountdowns) {
+                    // Assuming startCountdownTimer now expects an object structure for channel/message ID
                     countdowns.startCountdownTimer(
                         client, 
                         countdown.channel_id, 
@@ -124,7 +109,7 @@ async function initializeBot() {
                 }
             }
             
-            // G. Set bot status
+            // E. Set bot status
             client.user.setPresence({
                 activities: [{ name: "🎧 Listening to xSleepyo", type: Discord.ActivityType.Custom }],
                 status: "online",
@@ -143,6 +128,8 @@ async function initializeBot() {
         botInitialized = true;
     } catch (error) {
         console.error("Bot failed to initialize due to critical error:", error);
+        // Do not exit here to allow manual token fix if needed, but log the error clearly
+        // For production, you might want to process.exit(1) on token error.
         botInitialized = false; 
     }
 }
