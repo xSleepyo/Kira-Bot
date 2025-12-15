@@ -3,11 +3,11 @@
 const { Client, GatewayIntentBits, Events } = require("discord.js");
 const dotenv = require("dotenv");
 const express = require("express"); 
-const { initializeDatabase, loadState, loadMysteryBoxState, globalState, getDbClient } = require("./database"); 
+// Import all necessary functions from database.js
+const { setupDatabase, loadState, saveState, globalState, getDbClient } = require("./database"); 
 const { registerHandlers, registerSlashCommands, handleReactionRole, handleMessageDelete } = require("./handlers");
 const { keepAlive } = require("./utils");
-// FIX 1: Destructure the correct function name, which is likely 'startMysteryBoxTimer' 
-//        to fix the "is not a function" error.
+// FIX: Importing the correct function name (startMysteryBoxTimer) to fix the TypeError
 const { startMysteryBoxTimer } = require("./mysteryboxes"); 
 const countdowns = require("./countdown"); 
 
@@ -52,36 +52,36 @@ process.on("uncaughtException", (error) => {
 async function initializeBot(client, app) {
     try {
         // 1. Initialize Database
-        await initializeDatabase();
+        await setupDatabase(); // Using setupDatabase to match your export
         
-        // 2. Load Global State
-        globalState.botState = await loadState();
-        globalState.mysteryBoxState = await loadMysteryBoxState();
+        // 2. Load Global State (updates properties on the globalState object)
+        await loadState(); 
 
         // 3. Register all event handlers
         registerHandlers(client);
 
         // 4. Register slash commands and resume timers on ready
-        // FIX: Using Events.ClientReady to resolve DeprecationWarning
-        client.once(Events.ClientReady, async () => { 
+        client.once(Events.ClientReady, async () => { // FIX: Using Events.ClientReady
             console.log(`Bot is ready! Logged in as ${client.user.tag}`);
             
             await registerSlashCommands(client);
             
             // 5. Resume features that rely on timers/intervals
-            // FIX 2: Corrected function call name from 'resumeMysteryBoxTimer' to 'startMysteryBoxTimer'
-            await startMysteryBoxTimer(client, globalState.mysteryBoxState); 
+            // FIX: Corrected function call to startMysteryBoxTimer
+            await startMysteryBoxTimer(client, globalState); 
             await countdowns.resumeCountdowns(client);
             
             // 6. Handle post-restart message (if necessary)
-            const restartChannelId = globalState.botState.restart_channel_id;
+            const restartChannelId = globalState.restartChannelIdToAnnounce; // Accessing the correct globalState property
             if (restartChannelId) {
                 const channel = await client.channels.fetch(restartChannelId).catch(() => null);
                 if (channel) {
                     await channel.send("✅ Bot restart complete. All systems online.");
-                    globalState.botState.restart_channel_id = null;
-                    const { next_number_channel_id, next_number } = globalState.botState;
-                    await require('./database').saveState(next_number_channel_id, next_number, null);
+                    
+                    // Clear the restart flag in the database
+                    const nextChannelId = globalState.nextNumberChannelId;
+                    const nextNumber = globalState.nextNumber;
+                    await saveState(nextChannelId, nextNumber, null); 
                 }
             }
         });
@@ -98,7 +98,7 @@ async function initializeBot(client, app) {
         });
 
         // 9. Start the Keep-Alive Server
-        keepAlive(app);
+        keepAlive(app); // Assumes keepAlive and app are defined
 
         // 10. Log in
         await client.login(process.env.TOKEN);
