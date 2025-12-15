@@ -1,286 +1,234 @@
-// src/countdown.js
+// src/database.js
 
-const Discord = require("discord.js");
-const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js"); // Added imports
-const { getDbClient } = require("./database");
-const moment = require("moment"); // <-- IMPORTANT: Requires "moment": "^2.30.1" in package.json
-const countdownTimers = new Map();
+const { Client } = require("pg");
 
-// Removed manual parseTimeInterval function (replaced by moment.js logic in execute)
-// Removed manual formatTimeRemaining function (replaced by logic in createCountdownEmbed)
+const db = new Client({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+});
 
-/**
- * Command data for the /countdown command.
- */
-const data = new SlashCommandBuilder()
-    .setName("countdown")
-    .setDescription("Starts a self-updating countdown to a specific time/event (Admin only).")
-    .addStringOption(option =>
-        option.setName("title")
-            .setDescription("A brief description of what the countdown is for.")
-            .setRequired(true))
-    .addChannelOption(option =>
-        option.setName("channel")
-            .setDescription("The text channel where the countdown message should be posted.")
-            .setRequired(true)
-            .addChannelTypes(Discord.ChannelType.GuildText))
-    .addStringOption(option =>
-        option.setName("time")
-            .setDescription("The countdown duration (e.g., 1d 5h 30m). Units: y, mo, d, h, m, s.")
-            .setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
-
-/**
- * Executes the /countdown command.
- */
-async function execute(interaction) {
-    const title = interaction.options.getString("title");
-    const channel = interaction.options.getChannel("channel");
-    const timeInput = interaction.options.getString("time");
-
-    await interaction.deferReply({ ephemeral: true });
-
-    // 1. Parse Time Input using moment.js logic
-    const durationMatch = timeInput.match(/(\d+)([ymodhms])/g);
-    if (!durationMatch) {
-        return interaction.editReply({
-            content: "❌ Invalid time format. Use units like `1y`, `5mo`, `3d`, `8h`, `30m`, `5s`. Example: `1d 5h 30m`.",
-        });
-    }
-
-    let endTime = moment();
-    for (const part of durationMatch) {
-        const value = parseInt(part.slice(0, -1));
-        const unit = part.slice(-1);
-        
-        let momentUnit;
-        switch (unit) {
-            case 'y': momentUnit = 'years'; break;
-            case 'mo': momentUnit = 'months'; break;
-            case 'd': momentUnit = 'days'; break;
-            case 'h': momentUnit = 'hours'; break;
-            case 'm': momentUnit = 'minutes'; break;
-            case 's': momentUnit = 'seconds'; break;
-            default: continue; 
-        }
-        endTime = endTime.add(value, momentUnit);
-    }
+// Global object to hold all state variables
+const globalState = {
+    // Counting Game State
+    nextNumberChannelId: null,
+    nextNumber: 1,
+    restartChannelIdToAnnounce: null,
     
-    if (endTime.isSameOrBefore(moment())) {
-        return interaction.editReply({
-            content: "❌ The countdown must be set for a time in the future.",
-        });
-    }
-
-    const endTimeISO = endTime.toISOString();
+    // Mystery Box State 
+    // NOTE: This object only holds the config for the LAST guild loaded/saved.
+    // For a multi-guild bot, this should be a Map: Map<guild_id, config>
+    mysteryBoxGuildId: null, 
+    mysteryBoxChannelId: null,
+    mysteryBoxInterval: null, // Time in milliseconds (BIGINT from DB)
+    mysteryBoxNextDrop: null, // Timestamp (Date.now()) of the next drop (BIGINT from DB)
+    mysteryBoxTimer: null,    // The actual NodeJS Timer object
     
-    // 2. Calculate initial interval (Dynamic interval for better performance/accuracy)
-    let intervalMs = 60000; // Default to 1 minute
-    const durationTotalMs = endTime.diff(moment());
-    if (durationTotalMs < 3600000) { // If less than 1 hour
-        intervalMs = 5000; // 5 seconds
-    }
+    // --- NEW Countdown State ---
+    activeCountdowns: [], // Array to hold { channel_id, message_id, title, target_timestamp }
     
-    // 3. Post the initial message
-    const initialMessage = await channel.send({ 
-        embeds: [createCountdownEmbed(title, endTime, intervalMs)]
-    }).catch(e => {
-        console.error("Error sending initial countdown message:", e);
-        return null;
-    });
+    selfPingInterval: null, 
+};
 
-    if (!initialMessage) {
-        return interaction.editReply({
-            content: `❌ Failed to post the countdown message in ${channel}. Check bot permissions (View Channel, Send Messages, Embed Links).`,
-        });
-    }
-
-    // 4. Save to Database
-    const dbClient = getDbClient();
+async function setupDatabase() {
     try {
-        await dbClient.query(
-            `INSERT INTO countdowns (guild_id, channel_id, message_id, end_time, title, interval_ms)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [
-                interaction.guildId, 
-                channel.id, 
-                initialMessage.id, 
-                endTimeISO, 
-                title,
-                intervalMs 
-            ]
-        );
-    } catch (e) {
-        console.error("Database error saving countdown:", e);
-        await initialMessage.delete().catch(() => {});
-        return interaction.editReply({
-            content: "❌ Failed to save countdown to database. Deleting message. Check logs.",
-        });
+        await db.connect();
+        console.log("✅ PostgreSQL Database connected.");
+
+        // --- COUNTING TABLE ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS counting (
+                id INTEGER PRIMARY KEY,
+                channel_id TEXT,
+                next_number INTEGER
+            );
+        `);
+        // Check and add restart_channel_id column
+        await db.query(`
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='counting' AND column_name='restart_channel_id') THEN
+                    ALTER TABLE counting ADD COLUMN restart_channel_id TEXT;
+                END IF;
+            END $$;
+        `).catch(e => console.log("Restart channel column check skipped or failed (might already exist).", e.message));
+
+        // --- REACTION ROLES TABLE ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS reaction_roles (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                emoji_name TEXT NOT NULL,
+                role_id TEXT NOT NULL,
+                UNIQUE (message_id, emoji_name)
+            );
+        `);
+        
+        // --- MYSTERY BOX CONFIG TABLE (FIXED: Uses guild_id as PK to satisfy NOT NULL constraint) ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS mystery_boxes (
+                guild_id TEXT PRIMARY KEY,
+                channel_id TEXT,
+                interval_ms BIGINT,
+                next_drop_timestamp BIGINT
+            );
+        `);
+
+        // --- MYSTERY REWARDS TABLE ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS mystery_rewards (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                reward_description TEXT NOT NULL
+            );
+        `);
+        
+        // --- MYSTERY CLAIMS TABLE ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS mystery_claims (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                claim_id TEXT UNIQUE NOT NULL,
+                reward_description TEXT NOT NULL,
+                is_used BOOLEAN DEFAULT FALSE,
+                claimed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        
+        // --- COUNTDOWN TABLE (FIXED: Added guild_id, changed target_timestamp type) ---
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS countdowns (
+                message_id TEXT PRIMARY KEY,
+                guild_id TEXT NOT NULL,               
+                channel_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                target_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+                interval_ms INTEGER NOT NULL
+            );
+        `);
+        
+        console.log("✅ Database tables ensured.");
+
+
+    } catch (error) {
+        console.error("CRITICAL ERROR: Database setup failed!", error);
+        throw error;
     }
-
-    // 5. Start the Timer
-    startCountdownTimer(interaction.client, initialMessage, title, endTimeISO, intervalMs);
-
-    interaction.editReply({
-        content: `✅ Countdown **'${title}'** successfully started in ${channel}!`,
-    });
 }
 
-/**
- * Creates the Discord Embed for the countdown message.
- */
-function createCountdownEmbed(title, endTime, intervalMs) {
-    const now = moment();
-    const duration = moment.duration(endTime.diff(now));
-    
-    let timeRemaining;
-    if (duration.asMilliseconds() <= 0) {
-        timeRemaining = "🎉 **EXPIRED!** The event has begun!";
-    } else {
-        const years = duration.years();
-        const months = duration.months();
-        const days = duration.days();
-        const hours = duration.hours();
-        const minutes = duration.minutes();
-        const seconds = duration.seconds();
+async function loadState() {
+    try {
+        // --- Load Counting State ---
+        const countingResult = await db.query(
+            `SELECT channel_id, next_number, restart_channel_id FROM counting WHERE id = 1;`
+        );
 
-        let parts = [];
-        if (years > 0) parts.push(`${years}y`);
-        if (months > 0) parts.push(`${months}mo`);
-        if (days > 0) parts.push(`${days}d`);
-        if (hours > 0) parts.push(`${hours}h`);
-        if (minutes > 0) parts.push(`${minutes}m`);
-        
-        // Show seconds only if interval is 5s or less than 1 minute remaining
-        if (intervalMs <= 5000 || duration.asMinutes() < 1) {
-             parts.push(`${seconds}s`);
-        } else if (parts.length === 0) {
-            // If less than a minute, but interval is 1m, show 0m
-             parts.push(`${minutes}m`);
-        }
-
-        if (parts.length === 0 && duration.asSeconds() > 0) {
-            timeRemaining = `Remaining: **${seconds} seconds**`;
+        if (countingResult.rows.length === 0) {
+            await db.query(
+                `INSERT INTO counting (id, channel_id, next_number, restart_channel_id) VALUES (1, $1, $2, $3) ON CONFLICT (id) DO NOTHING;`,
+                [null, 1, null],
+            );
         } else {
-            timeRemaining = `Remaining: **${parts.join(', ')}**`;
-        }
-    }
-    
-    const embed = new Discord.EmbedBuilder()
-        .setColor(duration.asMilliseconds() > 0 ? Discord.Colors.Blurple : Discord.Colors.Green)
-        .setTitle(`⏳ Countdown: ${title}`)
-        .setDescription(timeRemaining)
-        .addFields(
-            { name: "End Time", value: `<t:${endTime.unix()}:F> (<t:${endTime.unix()}:R>)`, inline: false }
-        )
-        .setFooter({ text: duration.asMilliseconds() > 0 ? "Updating live..." : "Completed." });
-
-    return embed;
-}
-
-/**
- * Starts the interval timer for a single countdown.
- */
-function startCountdownTimer(client, message, title, endTimeISO, intervalMs) {
-    const endTime = moment(endTimeISO);
-    
-    if (endTime.isSameOrBefore(moment())) {
-        updateCountdown(client, message.id, message.channel.id, title, endTimeISO, true);
-        return;
-    }
-
-    // Use intervalMs from the DB to set the timer
-    const interval = setInterval(() => {
-        updateCountdown(client, message.id, message.channel.id, title, endTimeISO, false, interval);
-    }, intervalMs);
-    
-    countdownTimers.set(message.id, interval);
-}
-
-/**
- * Updates the countdown message or stops the timer if expired.
- */
-async function updateCountdown(client, messageId, channelId, title, endTimeISO, initialExpired = false, interval = null) {
-    const endTime = moment(endTimeISO);
-    const now = moment();
-    
-    const dbClient = getDbClient();
-    
-    if (initialExpired || endTime.isSameOrBefore(now)) {
-        if (interval) clearInterval(interval);
-        if (countdownTimers.has(messageId)) countdownTimers.delete(messageId);
-        
-        try {
-            // Remove from DB when finished
-            await dbClient.query('DELETE FROM countdowns WHERE message_id = $1', [messageId]);
-        } catch (e) {
-            console.error(`DB cleanup error for countdown ${messageId}:`, e);
-        }
-    }
-    
-    try {
-        const channel = await client.channels.fetch(channelId);
-        if (!channel) return;
-        
-        const message = await channel.messages.fetch(messageId).catch(() => null);
-        if (!message) {
-            // If message is missing, clean up DB/timer
-            if (interval) clearInterval(interval);
-            if (countdownTimers.has(messageId)) countdownTimers.delete(messageId);
-            await dbClient.query('DELETE FROM countdowns WHERE message_id = $1', [messageId]).catch(() => {});
-            return;
+            const row = countingResult.rows[0];
+            globalState.nextNumberChannelId = row.channel_id || null;
+            globalState.nextNumber = parseInt(row.next_number) || 1;
+            globalState.restartChannelIdToAnnounce = row.restart_channel_id || null;
         }
 
-        // Use the interval repeat value to decide how to display seconds
-        const intervalToUse = interval ? interval._repeat : 60000;
-        const embed = createCountdownEmbed(title, endTime, intervalToUse); 
-        await message.edit({ embeds: [embed] });
-        
-    } catch (e) {
-        console.error(`Error updating countdown message ${messageId}:`, e);
-        // Clean up if update fails (e.g., bot lost permissions)
-        if (interval) clearInterval(interval);
-        if (countdownTimers.has(messageId)) countdownTimers.delete(messageId);
-        await dbClient.query('DELETE FROM countdowns WHERE message_id = $1', [messageId]).catch(() => {});
-    }
-}
-
-/**
- * Loads all active countdowns from the DB and restarts their timers.
- */
-async function resumeCountdowns(client) {
-    const dbClient = getDbClient();
-    try {
-        // Only load countdowns that haven't expired yet
-        const result = await dbClient.query(
-            `SELECT * FROM countdowns WHERE end_time > NOW()`
+        console.log(
+            `[DB] Loaded Counting State - Channel ID: ${globalState.nextNumberChannelId}, Next Number: ${globalState.nextNumber}, Restart Announce Channel: ${globalState.restartChannelIdToAnnounce}`
         );
         
-        console.log(`Resuming ${result.rows.length} active countdown(s).`);
-
-        for (const row of result.rows) {
-            startCountdownTimer(client, { id: row.message_id, channel: { id: row.channel_id } }, row.title, row.end_time, row.interval_ms);
+        // --- Load Mystery Box State ---
+        // Load all rows, but only use the first one for the single-object globalState
+        const mysteryBoxResult = await db.query(
+            `SELECT guild_id, channel_id, interval_ms, next_drop_timestamp FROM mystery_boxes;`
+        );
+        
+        if (mysteryBoxResult.rows.length > 0) {
+            const row = mysteryBoxResult.rows[0];
+            globalState.mysteryBoxGuildId = row.guild_id; 
+            globalState.mysteryBoxChannelId = row.channel_id;
+            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; 
+            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; 
+        } else {
+             console.log("[DB] No Mystery Box config found. State is null, awaiting configuration.");
         }
-    } catch (e) {
-        console.error("Error resuming countdowns from database:", e);
+        
+        console.log(
+            `[DB] Loaded Mystery Box State - Guild ID: ${globalState.mysteryBoxGuildId}, Channel ID: ${globalState.mysteryBoxChannelId}, Interval: ${globalState.mysteryBoxInterval}ms, Next Drop: ${globalState.mysteryBoxNextDrop}`
+        );
+
+        // --- Load Active Countdowns ---
+        const countdownResult = await db.query(
+            // NOTE: The target_timestamp is now a Date object in JS when retrieved from the DB 
+            `SELECT channel_id, message_id, title, target_timestamp, interval_ms FROM countdowns;`
+        );
+        
+        globalState.activeCountdowns = countdownResult.rows.filter(row => {
+            // Compare the Date object returned from the DB against the current time
+            return row.target_timestamp.getTime() > Date.now();
+        });
+
+        console.log(`[DB] Loaded ${globalState.activeCountdowns.length} active countdown(s).`);
+
+    } catch (error) {
+        console.error("CRITICAL ERROR: Failed to load database state!", error);
+        throw error;
     }
 }
 
-/**
- * Clears all currently running timers (used for graceful shutdown/restart).
- */
-function stopAllTimers() {
-    for (const [id, interval] of countdownTimers) {
-        clearInterval(interval);
+async function saveState(channelId, nextNum, restartAnnounceId = null) {
+    try {
+        globalState.nextNumberChannelId = channelId;
+        globalState.nextNumber = nextNum;
+        globalState.restartChannelIdToAnnounce = restartAnnounceId;
+
+        await db.query(
+            `UPDATE counting SET channel_id = $1, next_number = $2, restart_channel_id = $3 WHERE id = 1;`,
+            [channelId, nextNum, restartAnnounceId],
+        );
+    } catch (error) {
+        console.error("CRITICAL ERROR: Failed to save database state!", error);
     }
-    countdownTimers.clear();
-    console.log("All countdown timers stopped.");
 }
 
+// Updated to accept guildId and use UPSERT logic for per-guild configuration
+async function saveMysteryBoxState(guildId, channelId, intervalMs, nextDropTimestamp) {
+    try {
+        globalState.mysteryBoxGuildId = guildId; 
+        globalState.mysteryBoxChannelId = channelId;
+        globalState.mysteryBoxInterval = intervalMs;
+        globalState.mysteryBoxNextDrop = nextDropTimestamp;
+
+        await db.query(
+            // Use UPSERT logic with guild_id as PK
+            `INSERT INTO mystery_boxes (guild_id, channel_id, interval_ms, next_drop_timestamp) 
+             VALUES ($1, $2, $3, $4) 
+             ON CONFLICT (guild_id) 
+             DO UPDATE SET channel_id = $2, interval_ms = $3, next_drop_timestamp = $4;`,
+            [guildId, channelId, intervalMs, nextDropTimestamp],
+        );
+        
+        console.log(`[DB] Mystery Box state saved for guild ${guildId}. Channel: ${channelId}, Next Drop: ${nextDropTimestamp}`);
+
+    } catch (error) {
+        console.error("CRITICAL ERROR: Failed to save mystery box state!", error);
+    }
+}
+
+
+const getState = () => globalState;
+const getDbClient = () => db;
 
 module.exports = {
-    data, 
-    execute, 
-    resumeCountdowns, 
-    stopAllTimers, 
+    setupDatabase,
+    loadState,
+    saveState,
+    getState,
+    getDbClient,
+    globalState,
+    saveMysteryBoxState, 
 };
