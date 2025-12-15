@@ -3,11 +3,12 @@
 const { Client, GatewayIntentBits, Events } = require("discord.js");
 const dotenv = require("dotenv");
 const express = require("express"); 
-// FIX: Corrected import name to 'initializeDatabase'
 const { initializeDatabase, loadState, loadMysteryBoxState, globalState, getDbClient } = require("./database"); 
 const { registerHandlers, registerSlashCommands, handleReactionRole, handleMessageDelete } = require("./handlers");
 const { keepAlive } = require("./utils");
-const mysteryboxes = require("./mysteryboxes");
+// FIX 1: Destructure the correct function name, which is likely 'startMysteryBoxTimer' 
+//        to fix the "is not a function" error.
+const { startMysteryBoxTimer } = require("./mysteryboxes"); 
 const countdowns = require("./countdown"); 
 
 dotenv.config();
@@ -51,7 +52,6 @@ process.on("uncaughtException", (error) => {
 async function initializeBot(client, app) {
     try {
         // 1. Initialize Database
-        // FIX: Using 'initializeDatabase' instead of 'setupDatabase'
         await initializeDatabase();
         
         // 2. Load Global State
@@ -69,7 +69,8 @@ async function initializeBot(client, app) {
             await registerSlashCommands(client);
             
             // 5. Resume features that rely on timers/intervals
-            await mysteryboxes.resumeMysteryBoxTimer(client, globalState.mysteryBoxState);
+            // FIX 2: Corrected function call name from 'resumeMysteryBoxTimer' to 'startMysteryBoxTimer'
+            await startMysteryBoxTimer(client, globalState.mysteryBoxState); 
             await countdowns.resumeCountdowns(client);
             
             // 6. Handle post-restart message (if necessary)
