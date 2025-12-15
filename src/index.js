@@ -3,8 +3,8 @@
 const { Client, GatewayIntentBits, Events } = require("discord.js");
 const dotenv = require("dotenv");
 const express = require("express"); 
-// NOTE: Renamed 'initializeDatabase' to 'setupDatabase' to match the database.js export
-const { setupDatabase, loadState, loadMysteryBoxState, globalState, getDbClient } = require("./database");
+// FIX: Corrected import name to 'initializeDatabase'
+const { initializeDatabase, loadState, loadMysteryBoxState, globalState, getDbClient } = require("./database"); 
 const { registerHandlers, registerSlashCommands, handleReactionRole, handleMessageDelete } = require("./handlers");
 const { keepAlive } = require("./utils");
 const mysteryboxes = require("./mysteryboxes");
@@ -28,7 +28,7 @@ const client = new Client({
     partials: ['MESSAGE', 'CHANNEL', 'REACTION'],
 });
 
-// --- Global Crash Handlers (Prevent Unhandled 'error' event on process) ---
+// --- Global Crash Handlers ---
 process.on("unhandledRejection", (error) => {
     console.error("CRITICAL UNHANDLED PROMISE REJECTION:", error);
 });
@@ -51,7 +51,8 @@ process.on("uncaughtException", (error) => {
 async function initializeBot(client, app) {
     try {
         // 1. Initialize Database
-        await setupDatabase(); // Corrected function call to setupDatabase
+        // FIX: Using 'initializeDatabase' instead of 'setupDatabase'
+        await initializeDatabase();
         
         // 2. Load Global State
         globalState.botState = await loadState();
@@ -61,7 +62,7 @@ async function initializeBot(client, app) {
         registerHandlers(client);
 
         // 4. Register slash commands and resume timers on ready
-        // FIX for DeprecationWarning: Renamed 'ready' to 'ClientReady'
+        // FIX: Using Events.ClientReady to resolve DeprecationWarning
         client.once(Events.ClientReady, async () => { 
             console.log(`Bot is ready! Logged in as ${client.user.tag}`);
             
@@ -85,18 +86,14 @@ async function initializeBot(client, app) {
         });
         
         // 7. Reaction Role and Message Delete Handlers
-        // We use getDbClient() here as the db client might not be accessible directly from the handler file
         const dbClient = getDbClient();
         client.on(Events.MessageReactionAdd, (reaction, user) => handleReactionRole(reaction, user, true, dbClient));
         client.on(Events.MessageReactionRemove, (reaction, user) => handleReactionRole(reaction, user, false, dbClient));
         client.on(Events.MessageDelete, (message) => handleMessageDelete(message, dbClient));
 
-        // 8. CRITICAL FIX: Handle the client's internal error events
-        // This is the fix for "throw er; // Unhandled 'error' event"
+        // 8. FIX: Handle the client's internal error events
         client.on('error', (error) => {
             console.error('CRITICAL CLIENT ERROR (Client.on(\'error\')):', error);
-            // This event is often thrown on network/gateway issues. 
-            // Logging it prevents the bot from crashing.
         });
 
         // 9. Start the Keep-Alive Server
