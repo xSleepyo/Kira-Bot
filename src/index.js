@@ -1,141 +1,88 @@
 // src/index.js
 
-const Discord = require("discord.js");
-const express = require("express");
-const axios = require("axios");
-const { Events } = require("discord.js");
+const { Client, GatewayIntentBits, Events } = require("discord.js");
+const dotenv = require("dotenv");
+const express = require("express"); // <-- ADDITION: Import Express
+const { initializeDatabase, loadState, loadMysteryBoxState, globalState } = require("./database");
+const { registerHandlers, registerSlashCommands, handleReactionRole, handleMessageDelete } = require("./handlers");
+const { keepAlive } = require("./utils");
+const mysteryboxes = require("./mysteryboxes");
+const countdowns = require("./countdown"); // <-- IMPORT: countdowns
 
-// --- Import Modularized Components ---
-const { 
-    setupDatabase, loadState, saveState, getState, getDbClient, globalState, 
-} = require('./database'); 
-const { keepAlive, selfPing } = require('./utils');
-const { 
-    registerHandlers, 
-    registerSlashCommands, 
-    handleReactionRole, 
-    handleMessageDelete 
-} = require('./handlers');
-const { startMysteryBoxTimer } = require('./mysteryboxes'); 
+dotenv.config();
 
-const countdowns = require('./countdown'); // <--- NEW IMPORT
-// ------------------------------------
+// Initialize the Express app for keep-alive (CRITICAL FIX)
+const app = express(); // <-- FIX: Initialize Express app
 
-// --- Global Crash Handlers ---
-process.on("unhandledRejection", (error) => {
-    console.error("CRITICAL UNHANDLED PROMISE REJECTION:", error);
-});
-
-process.on("uncaughtException", (error) => {
-    console.error("CRITICAL UNCAUGHT EXCEPTION:", error);
-    try {
-        if (client && client.isReady()) { 
-             client.destroy();
-        }
-    } catch (e) {
-        console.error("Failed to destroy client:", e);
-    }
-    process.exit(1);
-});
-// -----------------------------
-
-let botInitialized = false;
-
-const client = new Discord.Client({
+// --- Discord Client Setup ---
+const client = new Client({
     intents: [
-        Discord.GatewayIntentBits.Guilds,
-        Discord.GatewayIntentBits.GuildMessages,
-        Discord.GatewayIntentBits.MessageContent,
-        Discord.GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.DirectMessages,
     ],
-    partials: [
-        Discord.Partials.Message,
-        Discord.Partials.Channel,
-        Discord.Partials.Reaction,
-    ],
+    partials: ['MESSAGE', 'CHANNEL', 'REACTION'],
 });
 
-const token = process.env.TOKEN;
 
-async function initializeBot() {
-    if (botInitialized) {
-        console.log("⚠️ Initialization blocked: Bot is already logged in or recently started.");
-        return;
-    }
-    botInitialized = true;
-
+// --- Initialization Function ---
+async function initializeBot(client, app) {
     try {
-        console.log("Starting database setup...");
-        await setupDatabase();
+        // 1. Initialize Database
+        await initializeDatabase();
         
-        console.log("Loading global state...");
-        await loadState(); 
+        // 2. Load Global State
+        globalState.botState = await loadState();
+        globalState.mysteryBoxState = await loadMysteryBoxState(); // <-- LOAD NEW MYSTERY BOX STATE
 
-        keepAlive(express, axios);
-        registerHandlers(client); 
-        selfPing(axios);
+        // 3. Register all event handlers
+        registerHandlers(client);
 
-        await client.login(token);
-
-        client.on(Events.ClientReady, async () => {
-            console.log(`✅ Kira Bot is ready! Logged in as ${client.user.tag}`);
-
+        // 4. Register slash commands and resume timers on ready
+        client.once("ready", async () => {
+            console.log(`Bot is ready! Logged in as ${client.user.tag}`);
+            
             await registerSlashCommands(client);
             
-            // Check for pending restart announcement (Counting Game feature)
-            if (globalState.restartChannelIdToAnnounce) {
-                try {
-                    const channel = await client.channels.fetch(globalState.restartChannelIdToAnnounce);
-                    if (channel) {
-                        await channel.send("✅ **Restart complete!** I am back online.");
-                    }
-                } catch (e) {
-                    console.error("Failed to send restart completion message:", e);
-                } finally {
-                    await saveState(globalState.nextNumberChannelId, globalState.nextNumber, null);
+            // 5. Resume features that rely on timers/intervals
+            await mysteryboxes.resumeMysteryBoxTimer(client, globalState.mysteryBoxState);
+            await countdowns.resumeCountdowns(client); // <-- RESUME COUNTDOWNS
+            
+            // 6. Handle post-restart message (if necessary)
+            const restartChannelId = globalState.botState.restart_channel_id;
+            if (restartChannelId) {
+                const channel = await client.channels.fetch(restartChannelId).catch(() => null);
+                if (channel) {
+                    await channel.send("✅ Bot restart complete. All systems online.");
+                    globalState.botState.restart_channel_id = null;
+                    const { next_number_channel_id, next_number } = globalState.botState;
+                    await require('./database').saveState(next_number_channel_id, next_number, null);
                 }
             }
-            
-            // --- Resume Mystery Box Timer ---
-            if (globalState.mysteryBoxChannelId && globalState.mysteryBoxInterval) {
-                console.log("[MYSTERY BOX] Checking for pending drop...");
-                startMysteryBoxTimer(client, false); 
-            }
-            
-            // --- Resume Active Countdowns (NEW) ---
-            if (globalState.activeCountdowns.length > 0) {
-                console.log(`[COUNTDOWN] Resuming ${globalState.activeCountdowns.length} active countdown(s)...`);
-                for (const countdown of globalState.activeCountdowns) {
-                    countdowns.startCountdownTimer(
-                        client, 
-                        countdown.channel_id, 
-                        countdown.message_id, 
-                        countdown.title, 
-                        Number(countdown.target_timestamp) 
-                    );
-                }
-            }
-            
-            // Set bot status
-            client.user.setPresence({
-                activities: [{ name: "🎧 Listening to xSleepyo", type: Discord.ActivityType.Custom }],
-                status: "online",
-            });
         });
+        
+        // 7. Reaction Role Handlers
+        const dbClient = require('./database').getDbClient();
+        client.on(Events.MessageReactionAdd, (reaction, user) => handleReactionRole(reaction, user, true, dbClient));
+        client.on(Events.MessageReactionRemove, (reaction, user) => handleReactionRole(reaction, user, false, dbClient));
 
-        client.on("messageReactionAdd", (reaction, user) =>
-            handleReactionRole(reaction, user, true, getDbClient()),
-        );
-        client.on("messageReactionRemove", (reaction, user) =>
-            handleReactionRole(reaction, user, false, getDbClient()),
-        );
-        client.on("messageDelete", (message) => handleMessageDelete(message, getDbClient()));
+        // 8. Message Delete Handler
+        client.on(Events.MessageDelete, (message) => handleMessageDelete(message, dbClient));
 
+        // 9. Start the Keep-Alive Server
+        keepAlive(app); // <-- FIX: Pass the initialized Express app
+
+        // 10. Log in
+        await client.login(process.env.TOKEN);
 
     } catch (error) {
         console.error("Bot failed to initialize due to critical error:", error);
-        botInitialized = false; 
+        client.destroy();
+        process.exit(1); 
     }
 }
 
-initializeBot();
+initializeBot(client, app); // <-- FIX: Pass the initialized Express app

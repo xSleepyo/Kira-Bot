@@ -1,263 +1,286 @@
 // src/countdown.js
 
 const Discord = require("discord.js");
-const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
-const { getState, getDbClient } = require("./database");
-
+const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js"); // Added imports
+const { getDbClient } = require("./database");
+const moment = require("moment"); // <-- IMPORTANT: Requires "moment": "^2.30.1" in package.json
 const countdownTimers = new Map();
-const UPDATE_INTERVAL_MS = 5000; // Update the message every 5 seconds
 
-// --- Helper Functions ---
-
-/**
- * Converts a string like '1y 5d 2m' into total milliseconds.
- */
-function parseTimeInterval(timeString) {
-    if (!timeString) return null;
-
-    let totalMs = 0;
-    const regex = /(\d+)(y|mo|d|h|m|s)/gi; 
-    let match;
-
-    while ((match = regex.exec(timeString)) !== null) {
-        const value = parseInt(match[1]);
-        const unit = match[2].toLowerCase();
-
-        switch (unit) {
-            case 'y': // Years (365 days)
-                totalMs += value * 365 * 24 * 60 * 60 * 1000;
-                break;
-            case 'mo': // Months (Approx 30 days)
-                totalMs += value * 30 * 24 * 60 * 60 * 1000;
-                break;
-            case 'd': // Days
-                totalMs += value * 24 * 60 * 60 * 1000;
-                break;
-            case 'h': // Hours
-                totalMs += value * 60 * 60 * 1000;
-                break;
-            case 'm': // Minutes
-                totalMs += value * 60 * 1000;
-                break;
-            case 's': // Seconds
-                totalMs += value * 1000;
-                break;
-        }
-    }
-
-    return totalMs >= 60000 ? totalMs : null; // Minimum 1 minute
-}
+// Removed manual parseTimeInterval function (replaced by moment.js logic in execute)
+// Removed manual formatTimeRemaining function (replaced by logic in createCountdownEmbed)
 
 /**
- * Converts a total number of milliseconds into a human-readable string (Countdown format).
+ * Command data for the /countdown command.
  */
-function formatCountdownTime(ms) {
-    if (ms <= 0) return "TIME IS UP! 🚀";
-    
-    const totalSeconds = Math.floor(ms / 1000);
-
-    const seconds = totalSeconds % 60;
-    const minutes = Math.floor((totalSeconds / 60) % 60);
-    const hours = Math.floor((totalSeconds / (60 * 60)) % 24);
-    const totalDays = Math.floor(totalSeconds / (24 * 60 * 60));
-
-    const years = Math.floor(totalDays / 365);
-    const days = totalDays % 365;
-
-    const parts = [];
-    if (years > 0) parts.push(`${years} year${years !== 1 ? 's' : ''}`);
-    if (days > 0) parts.push(`${days} day${days !== 1 ? 's' : ''}`);
-    if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? 's' : ''}`);
-    if (minutes > 0) parts.push(`${minutes} minute${minutes !== 1 ? 's' : ''}`);
-    if (seconds > 0 || parts.length === 0) parts.push(`${seconds} second${seconds !== 1 ? 's' : ''}`);
-
-    return parts.join(", ");
-}
+const data = new SlashCommandBuilder()
+    .setName("countdown")
+    .setDescription("Starts a self-updating countdown to a specific time/event (Admin only).")
+    .addStringOption(option =>
+        option.setName("title")
+            .setDescription("A brief description of what the countdown is for.")
+            .setRequired(true))
+    .addChannelOption(option =>
+        option.setName("channel")
+            .setDescription("The text channel where the countdown message should be posted.")
+            .setRequired(true)
+            .addChannelTypes(Discord.ChannelType.GuildText))
+    .addStringOption(option =>
+        option.setName("time")
+            .setDescription("The countdown duration (e.g., 1d 5h 30m). Units: y, mo, d, h, m, s.")
+            .setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 /**
- * Creates the countdown embed message.
+ * Executes the /countdown command.
  */
-function createCountdownEmbed(title, targetTimestamp) {
-    const remainingMs = targetTimestamp - Date.now();
-    const remainingTime = formatCountdownTime(remainingMs);
-    const isFinished = remainingMs <= 0;
-    const targetDate = new Date(targetTimestamp).toUTCString();
-    
-    return new Discord.EmbedBuilder()
-        .setColor(isFinished ? 0xff0000 : 0x0099ff)
-        .setTitle(`⌛ COUNTDOWN: ${title}`)
-        .setDescription(
-            `**Remaining Time:**\n# ${remainingTime}`
-        )
-        .addFields(
-            { name: "Target Date (UTC)", value: targetDate, inline: false }
-        )
-        .setFooter({ text: isFinished ? "Countdown finished!" : "Updates every 5 seconds..." })
-        .setTimestamp();
-}
-
-/**
- * Stops the countdown timer for a specific channel.
- */
-function stopCountdownTimer(channelId) {
-    const timer = countdownTimers.get(channelId);
-    if (timer) {
-        clearInterval(timer);
-        countdownTimers.delete(channelId);
-    }
-}
-
-/**
- * Starts or resumes the countdown timer for a specific channel. (CORE TIMER LOGIC)
- */
-async function startCountdownTimer(client, channelId, messageId, title, targetTimestamp) {
-    stopCountdownTimer(channelId); // Stop any existing timer for this channel
-
-    const dbClient = getDbClient();
-    let channel;
-    try {
-        channel = await client.channels.fetch(channelId);
-        if (!channel) throw new Error("Channel not found.");
-    } catch (e) {
-        console.error(`[COUNTDOWN] Failed to fetch channel ${channelId}. Deleting countdown state.`);
-        await dbClient.query("DELETE FROM countdowns WHERE channel_id = $1", [channelId]);
-        return;
-    }
-
-    let message;
-    try {
-        message = await channel.messages.fetch(messageId);
-    } catch (e) {
-        console.error(`[COUNTDOWN] Failed to fetch message ${messageId} in ${channelId}. Deleting countdown state.`);
-        await dbClient.query("DELETE FROM countdowns WHERE channel_id = $1", [channelId]);
-        return;
-    }
-
-    const interval = setInterval(async () => {
-        const remainingMs = targetTimestamp - Date.now();
-        const embed = createCountdownEmbed(title, targetTimestamp);
-        
-        try {
-            await message.edit({ embeds: [embed] });
-        } catch (e) {
-            console.error(`[COUNTDOWN] Failed to edit message ${messageId}. Stopping timer.`, e.message);
-            stopCountdownTimer(channelId);
-            await dbClient.query("DELETE FROM countdowns WHERE channel_id = $1", [channelId]);
-            return;
-        }
-
-        if (remainingMs <= 0) {
-            stopCountdownTimer(channelId);
-            await dbClient.query("DELETE FROM countdowns WHERE channel_id = $1", [channelId]);
-            console.log(`[COUNTDOWN] Countdown in ${channelId} finished and stopped.`);
-        }
-    }, UPDATE_INTERVAL_MS);
-
-    countdownTimers.set(channelId, interval);
-    console.log(`[COUNTDOWN] Timer started/resumed for channel ${channelId}.`);
-}
-
-/**
- * Handles the slash command initiation.
- */
-async function handleCountdownCommand(interaction) {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return interaction.reply({ content: "❌ You need Administrator permissions to set up a countdown.", ephemeral: true });
-    }
-
-    const title = interaction.options.getString('title', true);
-    const channel = interaction.options.getChannel('channel', true);
-    const timeString = interaction.options.getString('time', true);
-
-    if (channel.type !== Discord.ChannelType.GuildText) {
-        return interaction.reply({ content: "❌ The channel must be a text channel.", ephemeral: true });
-    }
-    
-    const dbClient = getDbClient();
-    const existingCountdown = await dbClient.query("SELECT * FROM countdowns WHERE channel_id = $1", [channel.id]);
-
-    if (existingCountdown.rows.length > 0) {
-        return interaction.reply({ 
-            content: `❌ A countdown is already active in ${channel}.`, 
-            ephemeral: true 
-        });
-    }
-
-    const timeMs = parseTimeInterval(timeString);
-
-    if (!timeMs) {
-        return interaction.reply({ 
-            content: "❌ Invalid or too short time. Please use a format like `1d 5h 30m` (min 1 minute). Units: `y, mo, d, h, m, s`.", 
-            ephemeral: true 
-        });
-    }
-    
-    const targetTimestamp = Date.now() + timeMs;
-    const initialEmbed = createCountdownEmbed(title, targetTimestamp);
+async function execute(interaction) {
+    const title = interaction.options.getString("title");
+    const channel = interaction.options.getChannel("channel");
+    const timeInput = interaction.options.getString("time");
 
     await interaction.deferReply({ ephemeral: true });
 
-    // 1. Post the initial message to the channel
-    const message = await channel.send({ embeds: [initialEmbed] }).catch(e => {
-        console.error("Failed to post countdown message:", e);
+    // 1. Parse Time Input using moment.js logic
+    const durationMatch = timeInput.match(/(\d+)([ymodhms])/g);
+    if (!durationMatch) {
+        return interaction.editReply({
+            content: "❌ Invalid time format. Use units like `1y`, `5mo`, `3d`, `8h`, `30m`, `5s`. Example: `1d 5h 30m`.",
+        });
+    }
+
+    let endTime = moment();
+    for (const part of durationMatch) {
+        const value = parseInt(part.slice(0, -1));
+        const unit = part.slice(-1);
+        
+        let momentUnit;
+        switch (unit) {
+            case 'y': momentUnit = 'years'; break;
+            case 'mo': momentUnit = 'months'; break;
+            case 'd': momentUnit = 'days'; break;
+            case 'h': momentUnit = 'hours'; break;
+            case 'm': momentUnit = 'minutes'; break;
+            case 's': momentUnit = 'seconds'; break;
+            default: continue; 
+        }
+        endTime = endTime.add(value, momentUnit);
+    }
+    
+    if (endTime.isSameOrBefore(moment())) {
+        return interaction.editReply({
+            content: "❌ The countdown must be set for a time in the future.",
+        });
+    }
+
+    const endTimeISO = endTime.toISOString();
+    
+    // 2. Calculate initial interval (Dynamic interval for better performance/accuracy)
+    let intervalMs = 60000; // Default to 1 minute
+    const durationTotalMs = endTime.diff(moment());
+    if (durationTotalMs < 3600000) { // If less than 1 hour
+        intervalMs = 5000; // 5 seconds
+    }
+    
+    // 3. Post the initial message
+    const initialMessage = await channel.send({ 
+        embeds: [createCountdownEmbed(title, endTime, intervalMs)]
+    }).catch(e => {
+        console.error("Error sending initial countdown message:", e);
         return null;
     });
 
-    if (!message) {
-        return interaction.editReply({ 
-            content: "❌ Failed to post the countdown message in the channel. Check my permissions there." 
+    if (!initialMessage) {
+        return interaction.editReply({
+            content: `❌ Failed to post the countdown message in ${channel}. Check bot permissions (View Channel, Send Messages, Embed Links).`,
         });
     }
 
-    // 2. Save the state to the database
+    // 4. Save to Database
+    const dbClient = getDbClient();
     try {
         await dbClient.query(
-            "INSERT INTO countdowns (channel_id, message_id, title, target_timestamp) VALUES ($1, $2, $3, $4)",
-            [channel.id, message.id, title, targetTimestamp]
+            `INSERT INTO countdowns (guild_id, channel_id, message_id, end_time, title, interval_ms)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+                interaction.guildId, 
+                channel.id, 
+                initialMessage.id, 
+                endTimeISO, 
+                title,
+                intervalMs 
+            ]
         );
     } catch (e) {
-        console.error("Failed to save countdown state:", e);
-        await message.delete().catch(() => {}); // Clean up the posted message
-        return interaction.editReply({ 
-            content: "❌ Database error saving the countdown state. Countdown aborted." 
+        console.error("Database error saving countdown:", e);
+        await initialMessage.delete().catch(() => {});
+        return interaction.editReply({
+            content: "❌ Failed to save countdown to database. Deleting message. Check logs.",
         });
     }
 
-    // 3. Start the repeating timer
-    startCountdownTimer(interaction.client, channel.id, message.id, title, targetTimestamp);
+    // 5. Start the Timer
+    startCountdownTimer(interaction.client, initialMessage, title, endTimeISO, intervalMs);
 
-    return interaction.editReply({ 
-        content: `✅ Countdown **'${title}'** started in ${channel}! It will automatically update until completion.`,
+    interaction.editReply({
+        content: `✅ Countdown **'${title}'** successfully started in ${channel}!`,
     });
 }
 
+/**
+ * Creates the Discord Embed for the countdown message.
+ */
+function createCountdownEmbed(title, endTime, intervalMs) {
+    const now = moment();
+    const duration = moment.duration(endTime.diff(now));
+    
+    let timeRemaining;
+    if (duration.asMilliseconds() <= 0) {
+        timeRemaining = "🎉 **EXPIRED!** The event has begun!";
+    } else {
+        const years = duration.years();
+        const months = duration.months();
+        const days = duration.days();
+        const hours = duration.hours();
+        const minutes = duration.minutes();
+        const seconds = duration.seconds();
+
+        let parts = [];
+        if (years > 0) parts.push(`${years}y`);
+        if (months > 0) parts.push(`${months}mo`);
+        if (days > 0) parts.push(`${days}d`);
+        if (hours > 0) parts.push(`${hours}h`);
+        if (minutes > 0) parts.push(`${minutes}m`);
+        
+        // Show seconds only if interval is 5s or less than 1 minute remaining
+        if (intervalMs <= 5000 || duration.asMinutes() < 1) {
+             parts.push(`${seconds}s`);
+        } else if (parts.length === 0) {
+            // If less than a minute, but interval is 1m, show 0m
+             parts.push(`${minutes}m`);
+        }
+
+        if (parts.length === 0 && duration.asSeconds() > 0) {
+            timeRemaining = `Remaining: **${seconds} seconds**`;
+        } else {
+            timeRemaining = `Remaining: **${parts.join(', ')}**`;
+        }
+    }
+    
+    const embed = new Discord.EmbedBuilder()
+        .setColor(duration.asMilliseconds() > 0 ? Discord.Colors.Blurple : Discord.Colors.Green)
+        .setTitle(`⏳ Countdown: ${title}`)
+        .setDescription(timeRemaining)
+        .addFields(
+            { name: "End Time", value: `<t:${endTime.unix()}:F> (<t:${endTime.unix()}:R>)`, inline: false }
+        )
+        .setFooter({ text: duration.asMilliseconds() > 0 ? "Updating live..." : "Completed." });
+
+    return embed;
+}
 
 /**
- * Registers the countdown slash command definition.
+ * Starts the interval timer for a single countdown.
  */
-const countdownCommand = new SlashCommandBuilder()
-    .setName('countdown')
-    .setDescription('Starts a self-updating countdown to a specific time/event.')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption(option =>
-        option.setName('title')
-            .setDescription('A brief description of what the countdown is for.')
-            .setRequired(true)
-    )
-    .addChannelOption(option =>
-        option.setName('channel')
-            .setDescription('The text channel where the countdown message should be posted.')
-            .addChannelTypes(Discord.ChannelType.GuildText)
-            .setRequired(true)
-    )
-    .addStringOption(option =>
-        option.setName('time')
-            .setDescription('The countdown duration (e.g., 1d 5h 30m). Units: y, mo, d, h, m, s.')
-            .setRequired(true)
-    );
+function startCountdownTimer(client, message, title, endTimeISO, intervalMs) {
+    const endTime = moment(endTimeISO);
+    
+    if (endTime.isSameOrBefore(moment())) {
+        updateCountdown(client, message.id, message.channel.id, title, endTimeISO, true);
+        return;
+    }
+
+    // Use intervalMs from the DB to set the timer
+    const interval = setInterval(() => {
+        updateCountdown(client, message.id, message.channel.id, title, endTimeISO, false, interval);
+    }, intervalMs);
+    
+    countdownTimers.set(message.id, interval);
+}
+
+/**
+ * Updates the countdown message or stops the timer if expired.
+ */
+async function updateCountdown(client, messageId, channelId, title, endTimeISO, initialExpired = false, interval = null) {
+    const endTime = moment(endTimeISO);
+    const now = moment();
+    
+    const dbClient = getDbClient();
+    
+    if (initialExpired || endTime.isSameOrBefore(now)) {
+        if (interval) clearInterval(interval);
+        if (countdownTimers.has(messageId)) countdownTimers.delete(messageId);
+        
+        try {
+            // Remove from DB when finished
+            await dbClient.query('DELETE FROM countdowns WHERE message_id = $1', [messageId]);
+        } catch (e) {
+            console.error(`DB cleanup error for countdown ${messageId}:`, e);
+        }
+    }
+    
+    try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel) return;
+        
+        const message = await channel.messages.fetch(messageId).catch(() => null);
+        if (!message) {
+            // If message is missing, clean up DB/timer
+            if (interval) clearInterval(interval);
+            if (countdownTimers.has(messageId)) countdownTimers.delete(messageId);
+            await dbClient.query('DELETE FROM countdowns WHERE message_id = $1', [messageId]).catch(() => {});
+            return;
+        }
+
+        // Use the interval repeat value to decide how to display seconds
+        const intervalToUse = interval ? interval._repeat : 60000;
+        const embed = createCountdownEmbed(title, endTime, intervalToUse); 
+        await message.edit({ embeds: [embed] });
+        
+    } catch (e) {
+        console.error(`Error updating countdown message ${messageId}:`, e);
+        // Clean up if update fails (e.g., bot lost permissions)
+        if (interval) clearInterval(interval);
+        if (countdownTimers.has(messageId)) countdownTimers.delete(messageId);
+        await dbClient.query('DELETE FROM countdowns WHERE message_id = $1', [messageId]).catch(() => {});
+    }
+}
+
+/**
+ * Loads all active countdowns from the DB and restarts their timers.
+ */
+async function resumeCountdowns(client) {
+    const dbClient = getDbClient();
+    try {
+        // Only load countdowns that haven't expired yet
+        const result = await dbClient.query(
+            `SELECT * FROM countdowns WHERE end_time > NOW()`
+        );
+        
+        console.log(`Resuming ${result.rows.length} active countdown(s).`);
+
+        for (const row of result.rows) {
+            startCountdownTimer(client, { id: row.message_id, channel: { id: row.channel_id } }, row.title, row.end_time, row.interval_ms);
+        }
+    } catch (e) {
+        console.error("Error resuming countdowns from database:", e);
+    }
+}
+
+/**
+ * Clears all currently running timers (used for graceful shutdown/restart).
+ */
+function stopAllTimers() {
+    for (const [id, interval] of countdownTimers) {
+        clearInterval(interval);
+    }
+    countdownTimers.clear();
+    console.log("All countdown timers stopped.");
+}
+
 
 module.exports = {
-    data: countdownCommand,
-    execute: handleCountdownCommand,
-    startCountdownTimer, 
+    data, 
+    execute, 
+    resumeCountdowns, 
+    stopAllTimers, 
 };

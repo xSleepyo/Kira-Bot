@@ -1,223 +1,197 @@
 // src/database.js
 
-const { Client } = require("pg");
+const { Client } = require('pg');
+const globalState = {}; 
 
-const db = new Client({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-});
+let dbClient;
 
-// Global object to hold all state variables
-const globalState = {
-    // Counting Game State
-    nextNumberChannelId: null,
-    nextNumber: 1,
-    restartChannelIdToAnnounce: null,
-    
-    // Mystery Box State (FIXES "interval_ms" error)
-    mysteryBoxChannelId: null,
-    mysteryBoxInterval: null, // Time in milliseconds (BIGINT from DB)
-    mysteryBoxNextDrop: null, // Timestamp (Date.now()) of the next drop (BIGINT from DB)
-    mysteryBoxTimer: null,    // The actual NodeJS Timer object
-    
-    // --- NEW Countdown State ---
-    activeCountdowns: [], // Array to hold { channel_id, message_id, title, target_timestamp }
-    
-    selfPingInterval: null, 
-};
-
-async function setupDatabase() {
+/**
+ * Initializes the database connection and creates necessary tables.
+ */
+async function initializeDatabase() { // Renamed from setupDatabase
     try {
-        await db.connect();
-        console.log("✅ PostgreSQL Database connected.");
-
-        // --- COUNTING TABLE ---
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS counting (
-                id INTEGER PRIMARY KEY,
-                channel_id TEXT,
-                next_number INTEGER
-            );
-        `);
-        // Check and add restart_channel_id column
-        await db.query(`
-            DO $$ 
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='counting' AND column_name='restart_channel_id') THEN
-                    ALTER TABLE counting ADD COLUMN restart_channel_id TEXT;
-                END IF;
-            END $$;
-        `).catch(e => console.log("Restart channel column check skipped or failed (might already exist).", e.message));
-
-        // --- REACTION ROLES TABLE ---
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS reaction_roles (
-                id SERIAL PRIMARY KEY,
-                guild_id TEXT NOT NULL,
-                message_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
-                emoji_name TEXT NOT NULL,
-                role_id TEXT NOT NULL,
-                UNIQUE (message_id, emoji_name)
-            );
-        `);
-        
-        // --- MYSTERY BOX CONFIG TABLE (FIXES "interval_ms" error) ---
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS mystery_boxes (
-                id INTEGER PRIMARY KEY,
-                channel_id TEXT,
-                interval_ms BIGINT,
-                next_drop_timestamp BIGINT
-            );
-        `);
-
-        // --- MYSTERY REWARDS TABLE ---
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS mystery_rewards (
-                id SERIAL PRIMARY KEY,
-                guild_id TEXT NOT NULL,
-                reward_description TEXT NOT NULL
-            );
-        `);
-        
-        // --- MYSTERY CLAIMS TABLE ---
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS mystery_claims (
-                id SERIAL PRIMARY KEY,
-                guild_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                claim_id TEXT UNIQUE NOT NULL,
-                reward_description TEXT NOT NULL,
-                is_used BOOLEAN DEFAULT FALSE,
-                claimed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-        
-        // --- COUNTDOWN TABLE (NEW) ---
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS countdowns (
-                channel_id TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                target_timestamp BIGINT NOT NULL
-            );
-        `);
-        
-        console.log("✅ Database tables ensured.");
-
-
-    } catch (error) {
-        console.error("CRITICAL ERROR: Database setup failed!", error);
-        throw error;
-    }
-}
-
-async function loadState() {
-    try {
-        // --- Load Counting State ---
-        const countingResult = await db.query(
-            `SELECT channel_id, next_number, restart_channel_id FROM counting WHERE id = 1;`
-        );
-
-        if (countingResult.rows.length === 0) {
-            await db.query(
-                `INSERT INTO counting (id, channel_id, next_number, restart_channel_id) VALUES (1, $1, $2, $3) ON CONFLICT (id) DO NOTHING;`,
-                [null, 1, null],
-            );
-        } else {
-            const row = countingResult.rows[0];
-            globalState.nextNumberChannelId = row.channel_id || null;
-            globalState.nextNumber = parseInt(row.next_number) || 1;
-            globalState.restartChannelIdToAnnounce = row.restart_channel_id || null;
-        }
-
-        console.log(
-            `[DB] Loaded Counting State - Channel ID: ${globalState.nextNumberChannelId}, Next Number: ${globalState.nextNumber}, Restart Announce Channel: ${globalState.restartChannelIdToAnnounce}`
-        );
-        
-        // --- Load Mystery Box State ---
-        const mysteryBoxResult = await db.query(
-            `SELECT channel_id, interval_ms, next_drop_timestamp FROM mystery_boxes WHERE id = 1;`
-        );
-        
-        if (mysteryBoxResult.rows.length === 0) {
-            await db.query(
-                `INSERT INTO mystery_boxes (id, channel_id, interval_ms, next_drop_timestamp) VALUES (1, $1, $2, $3) ON CONFLICT (id) DO NOTHING;`,
-                [null, null, null],
-            );
-        } else {
-            const row = mysteryBoxResult.rows[0];
-            globalState.mysteryBoxChannelId = row.channel_id;
-            globalState.mysteryBoxInterval = row.interval_ms ? Number(row.interval_ms) : null; 
-            globalState.mysteryBoxNextDrop = row.next_drop_timestamp ? Number(row.next_drop_timestamp) : null; 
-        }
-        
-        console.log(
-            `[DB] Loaded Mystery Box State - Channel ID: ${globalState.mysteryBoxChannelId}, Interval: ${globalState.mysteryBoxInterval}ms, Next Drop: ${globalState.mysteryBoxNextDrop}`
-        );
-
-        // --- Load Active Countdowns ---
-        const countdownResult = await db.query(
-            `SELECT channel_id, message_id, title, target_timestamp FROM countdowns;`
-        );
-        
-        globalState.activeCountdowns = countdownResult.rows.filter(row => {
-            const target = Number(row.target_timestamp);
-            return target > Date.now();
+        dbClient = new Client({
+            connectionString: process.env.DATABASE_URL,
+            ssl: {
+                rejectUnauthorized: false,
+            },
         });
 
-        console.log(`[DB] Loaded ${globalState.activeCountdowns.length} active countdown(s).`);
+        await dbClient.connect();
+        console.log("Database connection successful.");
+
+        await createTables();
 
     } catch (error) {
-        console.error("CRITICAL ERROR: Failed to load database state!", error);
+        console.error("CRITICAL ERROR: Failed to connect or initialize database:", error);
         throw error;
     }
 }
 
-async function saveState(channelId, nextNum, restartAnnounceId = null) {
-    try {
-        globalState.nextNumberChannelId = channelId;
-        globalState.nextNumber = nextNum;
-        globalState.restartChannelIdToAnnounce = restartAnnounceId;
+/**
+ * Creates all necessary tables if they don't exist.
+ */
+async function createTables() {
+    // Consolidated all table creation logic here to ensure correct schema on startup
+    const createTableQueries = [
+        // 1. Bot State (for counting game, restart channel) - Replaces 'counting' table
+        `CREATE TABLE IF NOT EXISTS bot_state (
+            id SERIAL PRIMARY KEY,
+            next_number_channel_id TEXT,
+            next_number INT NOT NULL DEFAULT 1,
+            restart_channel_id TEXT
+        );`,
 
-        await db.query(
-            `UPDATE counting SET channel_id = $1, next_number = $2, restart_channel_id = $3 WHERE id = 1;`,
-            [channelId, nextNum, restartAnnounceId],
-        );
-    } catch (error) {
-        console.error("CRITICAL ERROR: Failed to save database state!", error);
-    }
-}
+        // 2. Reaction Roles
+        `CREATE TABLE IF NOT EXISTS reaction_roles (
+            guild_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            emoji_name TEXT NOT NULL,
+            role_id TEXT NOT NULL,
+            PRIMARY KEY (message_id, emoji_name)
+        );`,
 
-async function saveMysteryBoxState(channelId, intervalMs, nextDropTimestamp) {
-    try {
-        globalState.mysteryBoxChannelId = channelId;
-        globalState.mysteryBoxInterval = intervalMs;
-        globalState.mysteryBoxNextDrop = nextDropTimestamp;
+        // 3. Permanent GIF Users
+        `CREATE TABLE IF NOT EXISTS permanent_gif_users (
+            guild_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        );`,
 
-        await db.query(
-            `UPDATE mystery_boxes SET channel_id = $1, interval_ms = $2, next_drop_timestamp = $3 WHERE id = 1;`,
-            [channelId, intervalMs, nextDropTimestamp],
-        );
+        // 4. Mystery Box State - Replaces 'mystery_boxes' table
+        `CREATE TABLE IF NOT EXISTS mystery_box_state (
+            id SERIAL PRIMARY KEY,
+            last_drop_time TIMESTAMP WITH TIME ZONE,
+            next_drop_time TIMESTAMP WITH TIME ZONE,
+            drop_interval_ms BIGINT,
+            drop_channel_id TEXT,
+            active_message_id TEXT,
+            reward_role_id TEXT
+        );`,
         
-        console.log(`[DB] Mystery Box state saved. Channel: ${channelId}, Next Drop: ${nextDropTimestamp}`);
+        // 5. Countdowns (CRITICAL: Includes interval_ms to fix missing column error)
+        `CREATE TABLE IF NOT EXISTS countdowns (
+            id SERIAL PRIMARY KEY,
+            guild_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+            title TEXT NOT NULL,
+            interval_ms INTEGER NOT NULL DEFAULT 60000 
+        );` 
+    ];
 
+    for (const query of createTableQueries) {
+        await dbClient.query(query);
+    }
+    console.log("All tables checked/created.");
+}
+
+// --- State Management Functions ---
+
+// Loads general bot state (counting game/restart channel)
+async function loadState() {
+    try {
+        const result = await dbClient.query('SELECT * FROM bot_state LIMIT 1');
+        if (result.rows.length > 0) {
+            return result.rows[0];
+        }
+        // Initialize if empty
+        const insertResult = await dbClient.query(
+            'INSERT INTO bot_state (next_number) VALUES (1) RETURNING *'
+        );
+        return insertResult.rows[0];
     } catch (error) {
-        console.error("CRITICAL ERROR: Failed to save mystery box state!", error);
+        console.error("CRITICAL ERROR: Failed to load database state:", error);
+        throw error;
     }
 }
 
+// Saves general bot state
+async function saveState(nextNumberChannelId, nextNumber, restartChannelId) {
+    await dbClient.query(
+        `UPDATE bot_state SET 
+            next_number_channel_id = $1, 
+            next_number = $2,
+            restart_channel_id = $3`,
+        [nextNumberChannelId, nextNumber, restartChannelId]
+    );
+}
 
-const getState = () => globalState;
-const getDbClient = () => db;
+// Loads Mystery Box state (new structure)
+async function loadMysteryBoxState() {
+    const result = await dbClient.query('SELECT * FROM mystery_box_state LIMIT 1');
+    if (result.rows.length > 0) {
+        return result.rows[0];
+    }
+    return null;
+}
+
+// Saves Mystery Box state (new structure)
+async function saveMysteryBoxState(state) {
+    if (!state || !dbClient) return; // Safety check
+
+    if (!state.id) {
+        // Insert new row if state is new
+        const result = await dbClient.query(
+            `INSERT INTO mystery_box_state (
+                last_drop_time, next_drop_time, drop_interval_ms, drop_channel_id, active_message_id, reward_role_id
+            ) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+            [
+                state.last_drop_time || null, 
+                state.next_drop_time || null, 
+                state.drop_interval_ms || null, 
+                state.drop_channel_id || null, 
+                state.active_message_id || null, 
+                state.reward_role_id || null
+            ]
+        );
+        state.id = result.rows[0].id;
+    } else {
+        // Update existing row
+        await dbClient.query(
+            `UPDATE mystery_box_state SET 
+                last_drop_time = $1, 
+                next_drop_time = $2, 
+                drop_interval_ms = $3, 
+                drop_channel_id = $4, 
+                active_message_id = $5, 
+                reward_role_id = $6 
+            WHERE id = $7`,
+            [
+                state.last_drop_time, 
+                state.next_drop_time, 
+                state.drop_interval_ms, 
+                state.drop_channel_id, 
+                state.active_message_id, 
+                state.reward_role_id,
+                state.id
+            ]
+        );
+    }
+}
+
+// --- Getter and Exports ---
+
+function getDbClient() {
+    if (!dbClient) {
+        throw new Error("Database client not initialized.");
+    }
+    return dbClient;
+}
+
+function getState() {
+    return globalState.botState; 
+}
 
 module.exports = {
-    setupDatabase,
+    initializeDatabase, // Renamed from setupDatabase
     loadState,
     saveState,
-    getState,
+    loadMysteryBoxState, // New function for the new mystery box structure
+    saveMysteryBoxState, // New function for the new mystery box structure
     getDbClient,
+    getState,
     globalState,
-    saveMysteryBoxState, 
 };

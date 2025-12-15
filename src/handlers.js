@@ -3,8 +3,8 @@
 const Discord = require("discord.js");
 const axios = require("axios");
 const { PermissionFlagsBits, Events } = require("discord.js");
-const { handleMysteryBoxesCommand, handleSetupResponse } = require("./mysteryboxes"); // NEW IMPORT
-const countdowns = require("./countdown"); // <--- ADDITION 1: NEW IMPORT
+const { handleMysteryBoxesCommand, handleSetupResponse } = require("./mysteryboxes"); 
+const countdowns = require("./countdown"); // <-- ADDITION 1: Import the new module
 
 // Import data and utilities
 const { 
@@ -150,7 +150,7 @@ async function handleMessageCreate(client, message) {
     }
 
     // --- Command: .help (UPDATED) ---
-    else if (commandName === "help") {
+    if (commandName === "help") {
         const helpEmbed = new Discord.EmbedBuilder()
             .setColor(0x3498db)
             .setTitle("Kira Bot Commands")
@@ -158,7 +158,7 @@ async function handleMessageCreate(client, message) {
             .addFields(
                 {
                     name: "Admin Commands (Slash)",
-                    value: "`/countinggame` - Setup the counting channel.\n`/resetcounting` - Reset the count to 1.\n`/embed` - Starts an interactive conversation to build an embed.\n`/reactionrole` - Set up a reaction role on a message.\n`/countdown` - Starts a self-updating countdown.", // Added /countdown to help
+                    value: "`/countinggame` - Setup the counting channel.\n`/resetcounting` - Reset the count to 1.\n`/embed` - Starts an interactive conversation to build an embed.\n`/reactionrole` - Set up a reaction role on a message.\n`/countdown` - Starts a self-updating countdown.", 
                     inline: false,
                 },
                 {
@@ -195,7 +195,6 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .ship ---
     else if (commandName === "ship") {
-        // ... (Ship Logic) ...
         const user1 = message.author;
 
         let user2 = message.mentions.users.first();
@@ -257,7 +256,6 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .purge ---
     else if (commandName === "purge") {
-        // ... (Purge Logic) ...
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.ManageMessages)) {
             return message.channel.send("❌ You do not have permission to manage messages.");
         }
@@ -279,7 +277,6 @@ async function handleMessageCreate(client, message) {
     
     // --- Command: .gifperms ---
     else if (commandName === "gifperms") {
-        // ... (Gif Perms Logic) ...
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to manage GIF permissions.");
         }
@@ -349,7 +346,6 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .restart ---
     else if (commandName === "restart") {
-        // ... (Restart Logic) ...
         if (!message.member.permissions.has(Discord.PermissionFlagsBits.Administrator)) {
             return message.channel.send("❌ You must have Administrator permissions to restart the bot.");
         }
@@ -358,6 +354,7 @@ async function handleMessageCreate(client, message) {
             await message.channel.send("🔄 Restarting the bot now. Standby for a moment...");
             
             // 1. SAVE RESTART CHANNEL ID before shutting down
+            const state = getState();
             await saveState(state.nextNumberChannelId, state.nextNumber, message.channel.id);
             
             // 2. Clean up database connection
@@ -366,22 +363,19 @@ async function handleMessageCreate(client, message) {
                  await dbClient.end().catch(e => console.error("Failed to close DB connection:", e));
             }
 
-            // 3. Clean up self-ping interval
+            // 3. Clean up timers
             if (globalState.selfPingInterval) {
                 clearInterval(globalState.selfPingInterval);
             }
-            
-            // 4. Clean up mystery box timer
             if (globalState.mysteryBoxTimer) {
                 clearTimeout(globalState.mysteryBoxTimer);
             }
+            countdowns.stopAllTimers(); // <-- FIX: Stop all countdown timers
             
-            // 5. Clean up countdown timers (if implemented in globalState) - Assuming this is in index/countdown.js
-
-            // 6. Destroy the Discord client connection
+            // 4. Destroy the Discord client connection
             client.destroy();
             
-            // 7. Exit the process immediately. PM2 catches exit code 0 and automatically restarts.
+            // 5. Exit the process immediately.
             console.log("Process exiting cleanly. PM2 will handle the relaunch.");
             process.exit(0); 
 
@@ -400,7 +394,6 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .userinfo ---
     else if (commandName === "userinfo") {
-        // ... (User Info Logic) ...
         const member = message.mentions.members.first() || message.member;
         const user = member.user;
 
@@ -435,7 +428,6 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .8ball ---
     else if (commandName === "8ball") {
-        // ... (8ball Logic) ...
         const question = args.join(" ");
 
         if (!question) {
@@ -461,7 +453,6 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .status ---
     else if (commandName === "status") {
-        // ... (Status Logic) ...
         if (statusCooldown.has(message.channel.id)) {
             return; 
         }
@@ -501,7 +492,6 @@ async function handleMessageCreate(client, message) {
 
     // --- Command: .joke ---
     else if (commandName === "joke") {
-        // ... (Joke Logic) ...
         try {
             const response = await axios.get(
                 "https://v2.jokeapi.dev/joke/Any?blacklistFlags=racist,sexist,explicit&type=single",
@@ -528,7 +518,7 @@ async function handleMessageCreate(client, message) {
 
 // --- SLASH COMMAND REGISTER ---
 async function registerSlashCommands(client) {
-    // ... (rest of the registerSlashCommands function is unchanged)
+    // This is the array that registers all your slash commands
     const commands = [
         // Counting Game Commands
         {
@@ -591,34 +581,9 @@ async function registerSlashCommands(client) {
             ],
         },
         
-        // <--- ADDITION 2: NEW COUNTDOWN SLASH COMMAND OBJECT --->
-        { 
-            name: "countdown",
-            description: "Starts a self-updating countdown to a specific time/event (Admin only).",
-            default_member_permissions: PermissionFlagsBits.Administrator.toString(),
-            options: [
-                {
-                    name: "title",
-                    description: "A brief description of what the countdown is for.",
-                    type: Discord.ApplicationCommandOptionType.String,
-                    required: true,
-                },
-                {
-                    name: "channel",
-                    description: "The text channel where the countdown message should be posted.",
-                    type: Discord.ApplicationCommandOptionType.Channel,
-                    required: true,
-                    channel_types: [Discord.ChannelType.GuildText],
-                },
-                {
-                    name: "time",
-                    description: "The countdown duration (e.g., 1d 5h 30m). Units: y, mo, d, h, m, s.",
-                    type: Discord.ApplicationCommandOptionType.String,
-                    required: true,
-                },
-            ],
-        },
-        // <--- END ADDITION 2 --->
+        // <-- ADDITION 2: Add the countdown command data -->
+        countdowns.data,
+        // <-- END ADDITION 2 -->
     ];
 
     try {
@@ -644,13 +609,11 @@ async function handleInteractionCreate(interaction) {
                 ephemeral: true,
             });
         }
-        // Use imported function and pass the drafts object
         return startEmbedConversation(interaction, userEmbedDrafts); 
     }
 
     // --- /reactionrole Handler ---
     else if (interaction.commandName === "reactionrole") {
-        // ... (Reaction Role Logic) ...
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({
                 content: "❌ You need Administrator permissions to set up reaction roles.",
@@ -717,17 +680,15 @@ async function handleInteractionCreate(interaction) {
         }
     }
     
-    // <--- ADDITION 3: NEW COUNTDOWN COMMAND HANDLER --->
+    // <-- ADDITION 3: Handle the new countdown command -->
     else if (interaction.commandName === "countdown") {
-        // The actual execution logic is handled by the execute function in countdown.js
         return countdowns.execute(interaction);
     }
-    // <--- END ADDITION 3 --->
+    // <-- END ADDITION 3 -->
 
 
     // --- Counting Game Handlers ---
     else if (interaction.commandName === "countinggame") {
-        // ... (Counting Game Logic) ...
         const channel = interaction.options.getChannel("channel");
 
         if (!channel || channel.type !== Discord.ChannelType.GuildText) {
@@ -745,7 +706,6 @@ async function handleInteractionCreate(interaction) {
 
         channel.send(`**Counting Game Created!** Start counting from **1**!`);
     } else if (interaction.commandName === "resetcounting") {
-        // ... (Reset Counting Logic) ...
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({
                 content: "You do not have permission to use this command.",
@@ -781,7 +741,6 @@ async function handleInteractionCreate(interaction) {
 
 // --- REACTION ROLE LOGIC ---
 
-// Handles both Add and Remove logic using the 'added' boolean
 async function handleReactionRole(reaction, user, added, db) {
     if (user.bot) return;
 
@@ -796,7 +755,6 @@ async function handleReactionRole(reaction, user, added, db) {
 
     const messageId = reaction.message.id;
     const guildId = reaction.message.guild.id;
-    // Get emoji ID for custom emojis, or the unicode string for standard ones
     let emojiName = reaction.emoji.id ? reaction.emoji.id : reaction.emoji.name;
 
     try {
@@ -853,7 +811,6 @@ module.exports = {
     registerSlashCommands,
     handleReactionRole,
     handleMessageDelete,
-    // Exporting the main handlers to be used in index.js
     handleMessageCreate,
     handleInteractionCreate,
 };
