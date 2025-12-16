@@ -11,7 +11,7 @@ const countdowns = require("./countdown");
 
 // Import data and utilities
 const { 
-    PREFIX, COLOR_MAP, GIF_PERMS_ROLE_NAME, PROHIBITED_WORDS, 
+    PREFIX, COLOR_MAP, GIF_PERMS_ROLE_NAME, PROHIBITED_WORDS, // <-- PROHIBITED_WORDS is imported
     generateShipName, eightBallResponses, statusCooldown, 
     COOLDOWN_TIME, userEmbedDrafts, startEmbedConversation,
     handleEmbedDraftResponse
@@ -148,7 +148,7 @@ async function handleInteractionCreate(interaction) {
                 const compatibility = Math.floor(Math.random() * 101);
                 
                 const embed = new EmbedBuilder()
-                    .setColor(COLOR_MAP.purple) // Using a distinct color for the ship command
+                    .setColor(COLOR_MAP.purple) 
                     .setTitle(`💖 Shipping Forecast: ${user1.username} & ${user2.username}`)
                     .setDescription(`Their ship name is **${shipName}**!`)
                     .addFields(
@@ -181,7 +181,7 @@ async function handleInteractionCreate(interaction) {
                 }
                 
                 const rrEmbed = new EmbedBuilder()
-                    .setColor(COLOR_MAP.blue) // Using blue for Reaction Roles
+                    .setColor(COLOR_MAP.blue) 
                     .setTitle("Reaction Roles")
                     .setDescription(rrMessageText);
                 
@@ -235,6 +235,26 @@ async function handleInteractionCreate(interaction) {
 
 async function handleMessageCreate(client, message) {
     if (message.author.bot) return;
+
+    // --- Profanity Filter (Checks ALL non-bot messages first) ---
+    // If PROHIBITED_WORDS exists and is not empty
+    if (PROHIBITED_WORDS && PROHIBITED_WORDS.length > 0) {
+        const messageContentLower = message.content.toLowerCase();
+        
+        const isProfane = PROHIBITED_WORDS.some(word => 
+            messageContentLower.includes(word)
+        );
+
+        if (isProfane) {
+            message.delete().catch(e => console.error("Failed to delete message:", e));
+            // Send a warning message and delete it after a short delay
+            message.channel.send(`**${message.author.tag}**, please watch your language. That word is not allowed.`).then(msg => {
+                setTimeout(() => msg.delete().catch(() => {}), 5000); 
+            }).catch(() => {});
+            return; // Stop processing this message
+        }
+    }
+
 
     // --- Embed Builder Response Handler ---
     if (userEmbedDrafts.has(message.author.id)) {
@@ -298,7 +318,6 @@ async function handleMessageCreate(client, message) {
                  .setTitle("🎱 Magic 8-Ball")
                  .addFields(
                      { name: "Question", value: question },
-                     // Use a code block for a visually distinct answer field
                      { name: "Answer", value: wrap(response, 'fix') }
                  );
 
@@ -350,7 +369,6 @@ async function handleMessageCreate(client, message) {
                 return message.reply("🚫 You need the `Administrator` permission to restart the bot.");
             }
             
-            // This ensures the message is sent before the process exits
             message.channel.send("🔄 Restarting bot, please wait...").then(() => {
                 setTimeout(() => {
                     client.destroy(); 
@@ -405,27 +423,20 @@ async function handleMessageCreate(client, message) {
             
             // 3. Create the Embed using code blocks to mimic the ANSI color look
             const statusEmbed = new Discord.EmbedBuilder()
-                .setColor(COLOR_MAP.green) // Use green for the health report border
+                .setColor(COLOR_MAP.green) 
                 .setTitle("Bot Status Report")
                 .addFields(
-                    // Mimic the visual style with colored code blocks: 
                     // 'css' for green/yellow text, 'fix' for yellow/orange, 'diff' for gray/white
-                    
-                    // Connection (Green/Yellow)
                     { name: "Connection", value: wrap("Online", 'css'), inline: true },
-                    // Ping (Yellow/Orange)
                     { name: "Ping", value: wrap(`${client.ws.ping}ms`, 'fix'), inline: true },
-                    // Servers (Gray/White)
                     { name: "Servers", value: wrap(client.guilds.cache.size.toString(), 'diff'), inline: true },
                     
-                    { name: "\u200B", value: "\u200B", inline: false }, // Spacer
+                    { name: "\u200B", value: "\u200B", inline: false }, 
                     
-                    // Memory (Gray/White)
                     { name: "Memory", value: wrap(`${memoryUsage.toFixed(2)} MB`, 'diff'), inline: false },
                     
-                    { name: "\u200B", value: "\u200B", inline: false }, // Spacer
+                    { name: "\u200B", value: "\u200B", inline: false }, 
                     
-                    // Uptime (Gray/White)
                     { name: "Uptime", value: wrap(uptimeString, 'diff'), inline: false }
                 )
                 .setFooter({ text: `Updated Live • Today at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}` });
