@@ -23,6 +23,7 @@ const {
 } = require('./database');
 
 // --- CONFIGURATION ---
+// Ensure the color is retrieved correctly from the imported map
 const DEFAULT_COLOR = COLOR_MAP.default;
 
 // --- Helper to register all handlers on bot startup ---
@@ -148,7 +149,7 @@ async function handleInteractionCreate(interaction) {
                 const compatibility = Math.floor(Math.random() * 101);
                 
                 const embed = new EmbedBuilder()
-                    .setColor(0xffc0cb)
+                    .setColor(COLOR_MAP.purple) // Using a distinct color for the ship command
                     .setTitle(`💖 Shipping Forecast: ${user1.username} & ${user2.username}`)
                     .setDescription(`Their ship name is **${shipName}**!`)
                     .addFields(
@@ -181,7 +182,7 @@ async function handleInteractionCreate(interaction) {
                 }
                 
                 const rrEmbed = new EmbedBuilder()
-                    .setColor(0x0099ff)
+                    .setColor(COLOR_MAP.blue) // Using blue for Reaction Roles
                     .setTitle("Reaction Roles")
                     .setDescription(rrMessageText);
                 
@@ -206,12 +207,13 @@ async function handleInteractionCreate(interaction) {
                 return interaction.editReply(`✅ Reaction role message created in ${rrChannel} with ${pairs.length} roles.`);
 
             case 'help':
+                // Restored basic help for robustness
                 const helpEmbed = new EmbedBuilder()
                     .setColor(DEFAULT_COLOR)
                     .setTitle("Kira Bot Help Menu")
                     .setDescription("Use the text command `.help` to view a full list of commands.")
                     .addFields(
-                        { name: "Text Commands (Prefix: `.`):", value: "`.ping`, `.8ball <question>`, `.count <number>`, `.mysteryboxes` (admin setup), `.setrestartchannel <#channel | none>`, **.purge**, **.gifperms**, **.restart**, **.userinfo**, **.status**" },
+                        { name: "Text Commands (Prefix: `.`):", value: "`.ping` (Check latency), `.8ball <question>` (Ask the magic 8-ball), `.userinfo [@user]`, `.status` (View Bot Stats)" },
                         { name: "Slash Commands:", value: "`/help`, `/countdown <title> <channel> <time>`, `/setcounting <channel>`, `/ship <user1> [user2]`, `/embed`, `/reactionrole` (Admin)" }
                     );
                 
@@ -289,7 +291,16 @@ async function handleMessageCreate(client, message) {
             const question = args.slice(1).join(" ");
             if (!question) return message.reply("Please ask a question.");
             const response = eightBallResponses[Math.floor(Math.random() * eightBallResponses.length)];
-            message.reply(`**Question:** ${question}\n**🎱 Magic 8-Ball:** ${response}`);
+            
+            const eightBallEmbed = new EmbedBuilder()
+                 .setColor(COLOR_MAP.purple)
+                 .setTitle("🎱 Magic 8-Ball")
+                 .addFields(
+                     { name: "Question", value: question },
+                     { name: "Answer", value: response }
+                 );
+
+            message.channel.send({ embeds: [eightBallEmbed] });
             break;
 
         case 'purge':
@@ -301,10 +312,9 @@ async function handleMessageCreate(client, message) {
                 return message.reply("❌ Please provide a number between 1 and 100 to purge.");
             }
             try {
-                // Bulk delete includes the command message itself, so we delete 'amount' messages.
                 await message.channel.bulkDelete(amount, true);
                 message.channel.send(`✅ Successfully purged ${amount} messages.`).then(msg => {
-                    setTimeout(() => msg.delete().catch(() => {}), 5000); // Delete confirmation after 5 seconds
+                    setTimeout(() => msg.delete().catch(() => {}), 5000); 
                 }).catch(() => {});
             } catch (e) {
                 message.channel.send("❌ I encountered an error while trying to purge messages. Check my permissions.");
@@ -338,9 +348,7 @@ async function handleMessageCreate(client, message) {
                 return message.reply("🚫 You need the `Administrator` permission to restart the bot.");
             }
             
-            // [FIXED] Use .then() and setTimeout to ensure the message is sent before the process exits
             message.channel.send("🔄 Restarting bot, please wait...").then(() => {
-                // Give Discord's network time to send the message before terminating
                 setTimeout(() => {
                     client.destroy(); 
                     process.exit(0);
@@ -359,7 +367,7 @@ async function handleMessageCreate(client, message) {
             const joinDate = targetMember ? targetMember.joinedAt.toDateString() : 'N/A';
             const registrationDate = targetUser.createdAt.toDateString();
             const rolesList = targetMember ? targetMember.roles.cache
-                .filter(r => r.id !== message.guild.id) // Exclude @everyone role
+                .filter(r => r.id !== message.guild.id) 
                 .map(r => r.name)
                 .join(', ') || 'None' : 'N/A (DM/User not in guild)';
             
@@ -380,7 +388,7 @@ async function handleMessageCreate(client, message) {
             break;
 
         case 'status':
-            // [FIXED] Implement Bot Status Report (Ping, Memory, Uptime)
+            // Implement Bot Status Report (Ping, Memory, Uptime)
             
             // 1. Calculate Uptime
             const uptime = client.uptime;
@@ -396,9 +404,10 @@ async function handleMessageCreate(client, message) {
             
             // 3. Create the Embed that mimics the visual report
             const statusEmbed = new Discord.EmbedBuilder()
-                .setColor(0x00ff00) 
+                .setColor(COLOR_MAP.green) // Use green for the health report
                 .setTitle("Bot Status Report")
                 .addFields(
+                    // Mimic the visual style with field names and bold values
                     { name: "Connection", value: `**Online**`, inline: true },
                     { name: "Ping", value: `**${client.ws.ping}ms**`, inline: true },
                     { name: "Servers", value: `**${client.guilds.cache.size}**`, inline: true },
@@ -472,14 +481,6 @@ async function handleMessageCreate(client, message) {
 
 
 // --- REACTION ROLE HANDLERS ---
-
-/**
- * Handles adding/removing roles based on message reactions.
- * @param {Discord.MessageReaction} reaction 
- * @param {Discord.User} user 
- * @param {boolean} added - True if reaction was added, false if removed.
- * @param {pg.Client} db - PostgreSQL client.
- */
 async function handleReactionRole(reaction, user, added, db) {
     if (user.bot || !reaction.message.guild) return;
 
@@ -492,7 +493,6 @@ async function handleReactionRole(reaction, user, added, db) {
         }
     }
     
-    // Construct the emoji identifier
     const emojiName = reaction.emoji.id || reaction.emoji.name;
 
     try {
@@ -553,7 +553,6 @@ async function handleMessageDelete(message, db) {
         
         if (cdResult.rowCount > 0) {
              console.log(`[DB CLEANUP] Removed countdown entry for deleted message ID: ${message.id}`);
-             // Note: countdowns.stopAllTimers is for a full bot shutdown; individual cleanup is handled by timer failure.
         }
 
     } catch (error) {
