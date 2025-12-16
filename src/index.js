@@ -1,7 +1,7 @@
 // src/index.js
 
 const Discord = require("discord.js");
-const express = require("express"); // ADDED: Required to create the app instance
+const express = require("express"); 
 const axios = require("axios");
 const { Events } = require("discord.js");
 
@@ -11,19 +11,20 @@ const {
     loadState, 
     getDbClient, 
     globalState,
-    clearLastRestartChannel //
+    clearLastRestartChannel // Added for restart logic
 } = require('./database'); 
 
-const { keepAlive, selfPing } = require('./utils'); //
+// Import utils as an object to prevent "keepAlive is not a function" errors
+const utils = require('./utils');
 const { 
     registerHandlers, 
     registerSlashCommands, 
     handleReactionRole, 
     handleMessageDelete 
-} = require('./handlers'); //
-const { startMysteryBoxTimer } = require('./mysteryboxes'); //
+} = require('./handlers');
+const { startMysteryBoxTimer } = require('./mysteryboxes'); 
 
-const countdowns = require('./countdown'); //
+const countdowns = require('./countdown'); 
 // ------------------------------------
 
 // --- Global Crash Handlers ---
@@ -61,77 +62,62 @@ const client = new Discord.Client({
 async function initializeBot() {
     try {
         // 1. Database Setup and State Load
-        await setupDatabase(); //
-        await loadState(); //
+        await setupDatabase();
+        await loadState();
 
         // 2. Start Keep-Alive Server & Bind Port
-        // This section fixes the "Port scan timeout" error
+        // This fixes the "Port scan timeout" error by listening on the host's PORT
         const app = express(); 
         const PORT = process.env.PORT || 3000;
 
-        app.get('/', (req, res) => res.send('Bot Status: Online'));
+        app.get('/', (req, res) => res.send('Bot is online!'));
 
         app.listen(PORT, () => {
             console.log(`[SERVER] Health check server listening on port ${PORT}`);
         });
 
-        keepAlive(app); //
+        // Ensure keepAlive is called correctly from the utils object
+        if (utils.keepAlive) utils.keepAlive(app);
 
         // 3. Register General Handlers
-        registerHandlers(client); //
+        registerHandlers(client);
 
         // 4. Log in the bot
-        await client.login(process.env.TOKEN); //
+        await client.login(process.env.TOKEN);
 
         // 5. Client Ready Event
         client.on(Events.ClientReady, async () => {
             console.log(`\n✅ Bot is ready! Logged in as ${client.user.tag}`);
 
             // --- RESTART COMPLETION CHECK ---
-            // This checks if we just rebooted via the .restart command
-            if (globalState.restartChannelIdToAnnounce) { //
+            if (globalState.restartChannelIdToAnnounce) {
                 const channelId = globalState.restartChannelIdToAnnounce;
                 const channel = client.channels.cache.get(channelId);
                 
                 if (channel) {
                     await channel.send("✅ **Restart complete.** I'm back online!");
                 }
-                
-                // Clear the restart flag in DB/State
-                if (clearLastRestartChannel) {
-                    await clearLastRestartChannel().catch(console.error);
-                }
+                await clearLastRestartChannel().catch(console.error);
             }
             
             // A. Register Slash Commands
-            await registerSlashCommands(client); //
+            await registerSlashCommands(client);
             
-            // B. Resume Keep-Alive Ping (Essential for 24/7 uptime)
-            if (process.env.PING_URL) { //
+            // B. Resume Keep-Alive Ping (Stay online 24/7)
+            if (process.env.PING_URL && utils.selfPing) {
                 console.log("[KEEP-ALIVE] Starting self-ping timer.");
-                selfPing(); //
+                utils.selfPing(); 
             }
 
             // C. Start Mystery Box Timer
-            if (globalState.mysteryBoxChannelId) { //
+            if (globalState.mysteryBoxChannelId) {
                 console.log("[MYSTERY BOX] Starting drop timer...");
-                startMysteryBoxTimer(client, false); //
+                startMysteryBoxTimer(client, false);
             }
             
             // D. Resume Countdowns
             if (countdowns.resumeCountdowns) { 
-                countdowns.resumeCountdowns(client); //
-            } else if (globalState.activeCountdowns.length > 0) { //
-                console.log(`[COUNTDOWN] Resuming ${globalState.activeCountdowns.length} active countdown(s)...`);
-                for (const countdown of globalState.activeCountdowns) {
-                    countdowns.startCountdownTimer(
-                        client, 
-                        countdown.channel_id, 
-                        countdown.message_id, 
-                        countdown.title, 
-                        Number(countdown.target_timestamp) 
-                    );
-                }
+                countdowns.resumeCountdowns(client);
             }
             
             // E. Set bot status
@@ -141,7 +127,7 @@ async function initializeBot() {
             });
         });
 
-        // 6. Reaction and Message Delete Handlers
+        // 6. Event Handlers
         client.on("messageReactionAdd", (reaction, user) =>
             handleReactionRole(reaction, user, true, getDbClient()),
         );
