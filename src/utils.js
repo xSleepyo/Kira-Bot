@@ -1,13 +1,13 @@
 // src/utils.js
 
 const Discord = require("discord.js");
+const axios = require("axios"); // Added for self-ping functionality
 
 // --- CONSTANTS ---
 const PREFIX = ".";
 
-// Color map for embeds (Discord Hex values)
 const COLOR_MAP = {
-    default: "#3498db", // Blue
+    default: "#3498db", 
     green: "#2ecc71",
     red: "#e74c3c",
     purple: "#9b59b6",
@@ -15,10 +15,8 @@ const COLOR_MAP = {
     orange: "#e67e22",
 };
 
-// Role name for managing GIF permissions
 const GIF_PERMS_ROLE_NAME = "Gif-Perms"; 
 
-// List of words to filter - UPDATED PER USER REQUEST
 const PROHIBITED_WORDS = [
     "nigga",
     "nigger",
@@ -26,7 +24,6 @@ const PROHIBITED_WORDS = [
     "nig",
 ];
 
-// --- 8BALL RESPONSES ---
 const eightBallResponses = [
     "It is certain.",
     "It is decidedly so.",
@@ -51,34 +48,45 @@ const eightBallResponses = [
 ];
 
 // --- EMBED DRAFT STATE ---
-// Map to hold ongoing embed creation for each user
 const userEmbedDrafts = new Map();
-const COOLDOWN_TIME = 10000; // 10 seconds for status
+const COOLDOWN_TIME = 10000; 
 
 // --- UTILITY FUNCTIONS ---
 
 /**
- * Generates a random compatibility score and a ship name.
- * @param {string} name1 
- * @param {string} name2 
- * @returns {string} The generated ship name.
+ * Ensures the bot stays awake by hitting its own health check endpoint.
  */
+function selfPing() {
+    const url = process.env.PING_URL;
+    if (!url) return console.log("[KEEP-ALIVE] No PING_URL found. Self-ping disabled.");
+
+    setInterval(async () => {
+        try {
+            await axios.get(url);
+            console.log(`[KEEP-ALIVE] Self-ping successful: ${url}`);
+        } catch (err) {
+            console.error(`[KEEP-ALIVE] Self-ping failed: ${err.message}`);
+        }
+    }, 1000 * 60 * 5); // Every 5 minutes
+}
+
+/**
+ * Placeholder for any additional server-side keep-alive logic.
+ */
+function keepAlive(app) {
+    console.log("[KEEP-ALIVE] Server health-check listener active.");
+}
+
 function generateShipName(name1, name2) {
-    // Simple logic: take the first half of name1 and the second half of name2
     const len1 = name1.length;
     const len2 = name2.length;
-    
     const half1 = name1.substring(0, Math.floor(len1 / 2));
     const half2 = name2.substring(Math.floor(len2 / 2));
-    
     return half1 + half2;
 }
 
-// --- EMBED COMMAND HANDLERS (Simplified for structure) ---
+// --- EMBED COMMAND HANDLERS ---
 
-/**
- * Starts the interactive embed conversation with a user.
- */
 async function startEmbedConversation(interaction, drafts) {
     await interaction.deferReply({ ephemeral: true });
     
@@ -98,16 +106,11 @@ async function startEmbedConversation(interaction, drafts) {
     });
 }
 
-/**
- * Handles the user's message response during the embed drafting process.
- */
 async function handleEmbedDraftResponse(message, drafts) {
     const draft = drafts.get(message.author.id);
     if (!draft) return;
 
     const content = message.content;
-    
-    // Cleanup the user's message in the process
     message.delete().catch(() => {});
 
     switch (draft.step) {
@@ -128,36 +131,27 @@ async function handleEmbedDraftResponse(message, drafts) {
         case 'field3_name':
             if (content.toLowerCase() === 'done') {
                 draft.step = 'post';
-                // Fall through to post the embed
             } else {
                 draft.currentFieldName = content;
-                draft.step = draft.step.replace('name', 'value'); // Switch step to value
+                draft.step = draft.step.replace('name', 'value');
                 message.channel.send(`Enter the **value** for the field named: \`${content}\` `);
-                return; // Prevent fallthrough
+                return;
             }
-            // Fallthrough to 'post' handled below
 
         case 'field1_value':
         case 'field2_value':
         case 'field3_value':
             draft.embed.addFields({ name: draft.currentFieldName, value: content, inline: false });
-            
             const nextFieldIndex = parseInt(draft.step[5]) + 1;
-            
             if (nextFieldIndex <= 3) {
                  draft.step = `field${nextFieldIndex}_name`;
                  message.channel.send(`Enter the **name** for field ${nextFieldIndex}, or say \`done\` to finish.`);
                  return;
             }
-            
             draft.step = 'post';
-            // Fallthrough to 'post'
 
         case 'post':
-            // Send the final embed
             message.channel.send({ embeds: [draft.embed] });
-            
-            // Clean up
             drafts.delete(message.author.id);
             message.channel.send("✅ Embed created successfully!");
             break;
@@ -168,7 +162,6 @@ async function handleEmbedDraftResponse(message, drafts) {
             break;
     }
 }
-
 
 module.exports = {
     PREFIX,
@@ -181,4 +174,6 @@ module.exports = {
     userEmbedDrafts,
     startEmbedConversation,
     handleEmbedDraftResponse,
+    selfPing, // Exported for index.js
+    keepAlive  // Exported for index.js
 };
