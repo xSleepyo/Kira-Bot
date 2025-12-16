@@ -7,7 +7,11 @@ const { Events } = require("discord.js");
 
 // --- Import Modularized Components ---
 const { 
-    setupDatabase, loadState, getDbClient, globalState // Removed unused saveState
+    setupDatabase, 
+    loadState, 
+    getDbClient, 
+    globalState, 
+    clearLastRestartChannel // <--- ADDED: Function to clear the saved channel ID
 } = require('./database'); 
 // [FIXED] keepAlive is the function that needs the app, so we import express here
 const { keepAlive, selfPing } = require('./utils');
@@ -76,6 +80,22 @@ async function initializeBot() {
         client.on(Events.ClientReady, async () => {
             console.log(`\n✅ Bot is ready! Logged in as ${client.user.tag}`);
 
+            // --- RESTART COMPLETION CHECK (ADDED LOGIC) ---
+            if (globalState.lastRestartChannelId) {
+                const channelId = globalState.lastRestartChannelId;
+                const channel = client.channels.cache.get(channelId);
+                
+                if (channel) {
+                    await channel.send("✅ **Restart complete.** I'm back online!");
+                } else {
+                    console.log(`Warning: Failed to find channel with ID ${channelId} to send restart message.`);
+                }
+
+                // Clear the flag immediately after trying to send the message
+                await clearLastRestartChannel().catch(console.error);
+            }
+            // ----------------------------------------------
+            
             // A. Register Slash Commands
             await registerSlashCommands(client);
             

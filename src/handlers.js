@@ -11,7 +11,7 @@ const countdowns = require("./countdown");
 
 // Import data and utilities
 const { 
-    PREFIX, COLOR_MAP, GIF_PERMS_ROLE_NAME, PROHIBITED_WORDS, // <-- PROHIBITED_WORDS is imported
+    PREFIX, COLOR_MAP, GIF_PERMS_ROLE_NAME, PROHIBITED_WORDS, 
     generateShipName, eightBallResponses, statusCooldown, 
     COOLDOWN_TIME, userEmbedDrafts, startEmbedConversation,
     handleEmbedDraftResponse
@@ -19,8 +19,8 @@ const {
 
 // Import database functions and state
 const { 
-    saveState, getState, globalState, getDbClient,
-} = require('./database');
+    saveState, getState, globalState, getDbClient, saveLastRestartChannel
+} = require('./database'); 
 
 // --- CONFIGURATION ---
 const DEFAULT_COLOR = COLOR_MAP.default;
@@ -237,21 +237,25 @@ async function handleMessageCreate(client, message) {
     if (message.author.bot) return;
 
     // --- Profanity Filter (Checks ALL non-bot messages first) ---
-    // If PROHIBITED_WORDS exists and is not empty
     if (PROHIBITED_WORDS && PROHIBITED_WORDS.length > 0) {
         const messageContentLower = message.content.toLowerCase();
         
+        // Use a regex word boundary check to prevent false positives 
         const isProfane = PROHIBITED_WORDS.some(word => 
-            messageContentLower.includes(word)
+            // The \b ensures the word is a full, separate word.
+            new RegExp(`\\b${word}\\b`).test(messageContentLower)
         );
 
         if (isProfane) {
-            message.delete().catch(e => console.error("Failed to delete message:", e));
+            // Delete the message (Requires Manage Messages permission)
+            message.delete().catch(e => console.error("Failed to delete message. Bot needs 'Manage Messages' permission:", e));
+            
             // Send a warning message and delete it after a short delay
             message.channel.send(`**${message.author.tag}**, please watch your language. That word is not allowed.`).then(msg => {
                 setTimeout(() => msg.delete().catch(() => {}), 5000); 
             }).catch(() => {});
-            return; // Stop processing this message
+            
+            return; // STOP processing this message further
         }
     }
 
@@ -369,7 +373,12 @@ async function handleMessageCreate(client, message) {
                 return message.reply("🚫 You need the `Administrator` permission to restart the bot.");
             }
             
+            // 1. Save the channel ID to the database immediately
+            await saveLastRestartChannel(message.channel.id).catch(console.error);
+            
+            // 2. Send the pre-restart message
             message.channel.send("🔄 Restarting bot, please wait...").then(() => {
+                // 3. Terminate the process (the new process will read the ID)
                 setTimeout(() => {
                     client.destroy(); 
                     process.exit(0);
