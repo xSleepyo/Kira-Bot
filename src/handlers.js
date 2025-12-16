@@ -23,7 +23,6 @@ const {
 } = require('./database');
 
 // --- CONFIGURATION ---
-// Ensure the color is retrieved correctly from the imported map
 const DEFAULT_COLOR = COLOR_MAP.default;
 
 // --- Helper to register all handlers on bot startup ---
@@ -207,7 +206,6 @@ async function handleInteractionCreate(interaction) {
                 return interaction.editReply(`✅ Reaction role message created in ${rrChannel} with ${pairs.length} roles.`);
 
             case 'help':
-                // Restored basic help for robustness
                 const helpEmbed = new EmbedBuilder()
                     .setColor(DEFAULT_COLOR)
                     .setTitle("Kira Bot Help Menu")
@@ -263,6 +261,9 @@ async function handleMessageCreate(client, message) {
     const args = message.content.slice(PREFIX.length).trim().split(/ +/);
     const command = args[0].toLowerCase();
     
+    // Helper to wrap text in a code block for "ANSI" coloring look
+    const wrap = (text, lang = 'ini') => `\`\`\`${lang}\n${text}\n\`\`\``;
+
     // --- Mystery Box Text Command ---
     if (command === 'mysteryboxes') {
         return handleMysteryBoxesCommand(client, message, args);
@@ -297,7 +298,8 @@ async function handleMessageCreate(client, message) {
                  .setTitle("🎱 Magic 8-Ball")
                  .addFields(
                      { name: "Question", value: question },
-                     { name: "Answer", value: response }
+                     // Use a code block for a visually distinct answer field
+                     { name: "Answer", value: wrap(response, 'fix') }
                  );
 
             message.channel.send({ embeds: [eightBallEmbed] });
@@ -348,6 +350,7 @@ async function handleMessageCreate(client, message) {
                 return message.reply("🚫 You need the `Administrator` permission to restart the bot.");
             }
             
+            // This ensures the message is sent before the process exits
             message.channel.send("🔄 Restarting bot, please wait...").then(() => {
                 setTimeout(() => {
                     client.destroy(); 
@@ -388,8 +391,6 @@ async function handleMessageCreate(client, message) {
             break;
 
         case 'status':
-            // Implement Bot Status Report (Ping, Memory, Uptime)
-            
             // 1. Calculate Uptime
             const uptime = client.uptime;
             const totalSeconds = Math.floor(uptime / 1000);
@@ -402,19 +403,30 @@ async function handleMessageCreate(client, message) {
             // 2. Calculate Memory Usage (Node.js process memory)
             const memoryUsage = process.memoryUsage().heapUsed / 1024 / 1024; // MB
             
-            // 3. Create the Embed that mimics the visual report
+            // 3. Create the Embed using code blocks to mimic the ANSI color look
             const statusEmbed = new Discord.EmbedBuilder()
-                .setColor(COLOR_MAP.green) // Use green for the health report
+                .setColor(COLOR_MAP.green) // Use green for the health report border
                 .setTitle("Bot Status Report")
                 .addFields(
-                    // Mimic the visual style with field names and bold values
-                    { name: "Connection", value: `**Online**`, inline: true },
-                    { name: "Ping", value: `**${client.ws.ping}ms**`, inline: true },
-                    { name: "Servers", value: `**${client.guilds.cache.size}**`, inline: true },
+                    // Mimic the visual style with colored code blocks: 
+                    // 'css' for green/yellow text, 'fix' for yellow/orange, 'diff' for gray/white
+                    
+                    // Connection (Green/Yellow)
+                    { name: "Connection", value: wrap("Online", 'css'), inline: true },
+                    // Ping (Yellow/Orange)
+                    { name: "Ping", value: wrap(`${client.ws.ping}ms`, 'fix'), inline: true },
+                    // Servers (Gray/White)
+                    { name: "Servers", value: wrap(client.guilds.cache.size.toString(), 'diff'), inline: true },
+                    
                     { name: "\u200B", value: "\u200B", inline: false }, // Spacer
-                    { name: "Memory", value: `**${memoryUsage.toFixed(2)} MB**`, inline: false },
+                    
+                    // Memory (Gray/White)
+                    { name: "Memory", value: wrap(`${memoryUsage.toFixed(2)} MB`, 'diff'), inline: false },
+                    
                     { name: "\u200B", value: "\u200B", inline: false }, // Spacer
-                    { name: "Uptime", value: `**${uptimeString}**`, inline: false }
+                    
+                    // Uptime (Gray/White)
+                    { name: "Uptime", value: wrap(uptimeString, 'diff'), inline: false }
                 )
                 .setFooter({ text: `Updated Live • Today at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}` });
 
